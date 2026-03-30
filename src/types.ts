@@ -32,7 +32,7 @@ export interface ImpressionEntry {
 	toolInput?: Record<string, unknown>;
 	fullContent: (TextContent | ImageContent)[];
 	fullText: string;
-	originalTokens?: number;
+	originalChars?: number;
 	recallCount: number;
 	createdAt: number;
 	modelProvider: string;
@@ -48,7 +48,7 @@ export function isImpressionEntry(value: unknown): value is ImpressionEntry {
 		typeof record.toolCallId === "string" &&
 		Array.isArray(record.fullContent) &&
 		typeof record.fullText === "string" &&
-		(record.originalTokens === undefined || typeof record.originalTokens === "number") &&
+		(record.originalChars === undefined || typeof record.originalChars === "number") &&
 		typeof record.recallCount === "number" &&
 		typeof record.createdAt === "number" &&
 		typeof record.modelProvider === "string" &&

@@ -25,18 +25,15 @@ function serializeVisibleHistory(messages: ReturnType<typeof buildSessionContext
 	return messages.map((m) => JSON.stringify(m)).join("\n");
 }
 
-const SetImpressionModeParams = Type.Object({
-	mode: Type.Union([Type.Literal("normal"), Type.Literal("passthrough")], {
-		description: "'passthrough' skips distillation for the next N tool results; 'normal' cancels passthrough mode.",
-	}),
+const SkipImpressionParams = Type.Object({
 	count: Type.Optional(Type.Number({ description: "Number of tool results to pass through unchanged (default 1). Capped by config." })),
 });
 
 export default function (pi: ExtensionAPI) {
 	const impressions = new Map<string, ImpressionEntry>();
 	let cfg: ResolvedConfig = resolveConfig(loadConfig());
-	let cumulativeOriginalTokens = 0;
-	let cumulativeImpressionTokens = 0;
+	let cumulativeOriginalChars = 0;
+	let cumulativeImpressionChars = 0;
 	let passthroughRemaining = 0;
 
 	function persistPassthroughRemaining() {
@@ -48,10 +45,10 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus("impression-data", undefined);
 			return;
 		}
-		const total = cumulativeOriginalTokens + cumulativeImpressionTokens;
+		const total = cumulativeOriginalChars + cumulativeImpressionChars;
 		ctx.ui.setStatus(
 			"impression-data",
-			`[impression:data] original ${cumulativeOriginalTokens}; impression ${cumulativeImpressionTokens} = ${total}`,
+			`[impression:data] original ${cumulativeOriginalChars}; impression ${cumulativeImpressionChars} = ${total}`,
 		);
 	}
 
@@ -59,20 +56,20 @@ export default function (pi: ExtensionAPI) {
 		ctx: { ui: { notify(message: string, type?: "info" | "warning" | "error"): void; setStatus(key: string, text: string | undefined): void } },
 		impression: ImpressionEntry,
 		mode: "passthrough" | "distill",
-		newTokens: number,
+		noteChars: number,
 	) {
 		if (!cfg.showData) return;
-		const ori = impression.originalTokens ?? 0;
-		const add = mode === "passthrough" ? ori : newTokens;
-		cumulativeImpressionTokens += add;
-		ctx.ui.notify(`[impression:data] recall ${mode}: ori=${ori}, new=${newTokens}, add=${add}`, "info");
+		const ori = impression.originalChars ?? 0;
+		const add = mode === "passthrough" ? ori : noteChars;
+		cumulativeImpressionChars += add;
+		ctx.ui.notify(`[impression:data] recall ${mode}: ori=${ori}, note=${noteChars}, add=${add}`, "info");
 		updateShowDataStatus(ctx);
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		cfg = resolveConfig(loadConfig());
-		cumulativeOriginalTokens = 0;
-		cumulativeImpressionTokens = 0;
+		cumulativeOriginalChars = 0;
+		cumulativeImpressionChars = 0;
 		passthroughRemaining = 0;
 		impressions.clear();
 		for (const entry of ctx.sessionManager.getEntries()) {
@@ -89,10 +86,17 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
-		if (event.toolName === "recall_impression" || event.toolName === "set_impression_mode") return;
+		if (event.toolName === "recall_impression" || event.toolName === "skip_impression") return;
 		if (passthroughRemaining > 0) {
 			passthroughRemaining--;
 			persistPassthroughRemaining();
+			if (cfg.showData) {
+				const chars = serializeContent(event.content).length;
+				cumulativeOriginalChars += chars;
+				cumulativeImpressionChars += chars;
+				ctx.ui.notify(`[impression:data] set_impression_mode passthrough: ${chars}`, "info");
+				updateShowDataStatus(ctx);
+			}
 			ctx.ui.notify(`[impression] Passthrough mode (${passthroughRemaining} remaining)`, "info");
 			return;
 		}
@@ -123,9 +127,8 @@ export default function (pi: ExtensionAPI) {
 		}
 		const visibleHistory = serializeVisibleHistory(buildSessionContext(ctx.sessionManager.getEntries()).messages);
 		const originalSystemPrompt = ctx.getSystemPrompt();
-		const oldTokens = ctx.getContextUsage()?.tokens ?? 0;
 		ctx.ui.setStatus("impression-distill", `[impression] Distilling ${fullText.length} chars with ${model.provider}/${model.id}...`);
-		let distillation: { passthrough: boolean; note: string; thinking?: string; usage: { input: number; output: number; outputVisible: number } };
+		let distillation: { passthrough: boolean; note: string; thinking?: string };
 		try {
 			distillation = await distillWithSameModel(
 				model,
@@ -141,30 +144,31 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus("impression-distill", undefined);
 		}
 
-		if (cfg.showData) {
-			const ori = distillation.usage.input;
-			const impressionTokens = distillation.usage.outputVisible;
-			const originalTokens = Math.max(ori - oldTokens, 0);
-			cumulativeOriginalTokens += originalTokens;
-			cumulativeImpressionTokens += impressionTokens;
-			ctx.ui.notify(
-				`[impression:data] old=${oldTokens}, ori=${ori}, new=${impressionTokens}, original=${originalTokens}, impression=${impressionTokens}`,
-				"info",
-			);
-			updateShowDataStatus(ctx);
-		}
-
 		if (distillation.thinking) {
 			ctx.ui.notify(`[impression] Thinking: ${distillation.thinking}`, "info");
 		}
 
 		if (distillation.passthrough) {
+			if (cfg.showData) {
+				cumulativeOriginalChars += fullText.length;
+				cumulativeImpressionChars += fullText.length;
+				ctx.ui.notify(`[impression:data] passthrough original=${fullText.length}, impression=${fullText.length}`, "info");
+				updateShowDataStatus(ctx);
+			}
 			ctx.ui.notify(`[impression] Distillation passthrough with text: ${distillation.note}`, "info");
 			return { content: event.content };
 		}
 
+		if (cfg.showData) {
+			const impressionChars = distillation.note.length;
+			cumulativeOriginalChars += fullText.length;
+			cumulativeImpressionChars += impressionChars;
+			ctx.ui.notify(`[impression:data] distill original=${fullText.length}, impression=${impressionChars}`, "info");
+			updateShowDataStatus(ctx);
+		}
+
 		const id = randomUUID();
-		const originalTokens = Math.max(distillation.usage.input - oldTokens, 0);
+		const originalChars = fullText.length;
 		const impression: ImpressionEntry = {
 			id,
 			toolName: event.toolName,
@@ -172,7 +176,7 @@ export default function (pi: ExtensionAPI) {
 			toolInput: event.input,
 			fullContent: event.content,
 			fullText,
-			originalTokens,
+			originalChars,
 			recallCount: 0,
 			createdAt: Date.now(),
 			modelProvider: model.provider,
@@ -238,7 +242,7 @@ export default function (pi: ExtensionAPI) {
 			const visibleHistory = serializeVisibleHistory(buildSessionContext(ctx.sessionManager.getEntries()).messages);
 			const originalSystemPrompt = ctx.getSystemPrompt();
 			ctx.ui.setStatus("impression-distill", `[impression] Re-distilling ${impression.fullText.length} chars with ${model.provider}/${model.id}...`);
-			let distillation: { passthrough: boolean; note: string; thinking?: string; usage: { input: number; output: number; outputVisible: number } };
+			let distillation: { passthrough: boolean; note: string; thinking?: string };
 			try {
 				distillation = await distillWithSameModel(
 					model,
@@ -261,43 +265,36 @@ export default function (pi: ExtensionAPI) {
 			if (distillation.passthrough) {
 				impression.recallCount = cfg.maxRecall;
 				pi.appendEntry("impression-v1", impression);
-				updateRecallShowData(ctx, impression, "passthrough", distillation.usage.outputVisible);
+				updateRecallShowData(ctx, impression, "passthrough", distillation.note.length);
 				return createPassthroughToolResult(impression.fullContent);
 			}
 
 			impression.recallCount += 1;
 			if (impression.recallCount >= cfg.maxRecall) {
 				pi.appendEntry("impression-v1", impression);
-				updateRecallShowData(ctx, impression, "passthrough", distillation.usage.outputVisible);
+				updateRecallShowData(ctx, impression, "passthrough", distillation.note.length);
 				return createPassthroughToolResult(impression.fullContent);
 			}
 
 			pi.appendEntry("impression-v1", impression);
-			updateRecallShowData(ctx, impression, "distill", distillation.usage.outputVisible);
+			updateRecallShowData(ctx, impression, "distill", distillation.note.length);
 			return createRecallToolResult(impression.id, distillation.note);
 		},
 	});
 
 	pi.registerTool({
-		name: "set_impression_mode",
-		label: "Set Impression Mode",
+		name: "skip_impression",
+		label: "Skip Impression",
 		description:
-			"Temporarily skip distillation for the next N tool results (max " + cfg.maxPassthroughCount + "). Use when you need exact original content for comparison, diff, or code review.",
-		promptSnippet: "set_impression_mode: Temporarily skip distillation. Call with { mode: 'passthrough', count: N } (max " + cfg.maxPassthroughCount + ") before reads that need exact original content (e.g., line-by-line diff, code review). Call with { mode: 'normal' } to cancel.",
-		parameters: SetImpressionModeParams,
-		async execute(_toolCallId, args, _signal, _onUpdate, ctx) {
-			if (args.mode === "normal") {
-				passthroughRemaining = 0;
-				persistPassthroughRemaining();
-				ctx.ui.notify("[impression] Passthrough mode cancelled", "info");
-				return { content: [{ type: "text", text: "Impression mode set to normal. Distillation resumed." }], details: undefined };
-			}
+			"Skip distillation for the next N tool results (max " + cfg.maxPassthroughCount + "). Use ONLY when you MUST have the exact original content (e.g., for `edit`, keep it for future line-by-line comparison). DO NOT use when just want to understand the codes. You MUST justify your use before calling.",
+		promptSnippet: "skip_impression: Skip distillation for the next N tool results (max " + cfg.maxPassthroughCount + "). Call with { count: N } before reads that EXPLICITLY REQUIRE exact original content (e.g., for `edit` or line-by-line for future comparison). DO NOT use when just want to understand the codes. You MUST justify your use before calling.",
+		parameters: SkipImpressionParams,
+		async execute(_toolCallId, args, _signal, _onUpdate, _ctx) {
 			const requested = args.count ?? 1;
 			passthroughRemaining = Math.min(Math.max(requested, 1), cfg.maxPassthroughCount);
 			persistPassthroughRemaining();
-			ctx.ui.notify(`[impression] Passthrough mode: next ${passthroughRemaining} tool result(s) will skip distillation`, "info");
 			return {
-				content: [{ type: "text", text: `Passthrough mode active. Next ${passthroughRemaining} tool result(s) will return original content without distillation.` }],
+				content: [{ type: "text", text: `Skipping distillation for next ${passthroughRemaining} tool result(s).` }],
 				details: undefined,
 			};
 		},
