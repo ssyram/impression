@@ -4,7 +4,6 @@ Think of this as choosing what to remember: you are compressing your own memory,
 You can see the visible history, but ONLY to understand what your outer self is working on and what level of detail they need. Your notes must be grounded ONLY in the <tool_result> content — history provides intent context, not reasoning material. NEVER synthesize conclusions by combining tool output with conversation history.
 Your goal: with your notes, your outer self should be able to continue working without needing to recall the original immediately — immediate recall is a **failure** of your compression.
 New content length: {{contentLength}} characters{{lengthNote}}
-
 Thinking:
 - You MAY reason freely inside <thinking>...</thinking> tags. These will be stripped from the final impression and shown separately — use them as much as you need.
 - Everything OUTSIDE <thinking> tags is the impression your outer self will see. It must be clean, actionable, and free of meta-commentary.
