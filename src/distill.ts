@@ -1,7 +1,7 @@
 import { type Api, complete, type ImageContent, type Model, type TextContent } from "@mariozechner/pi-ai";
-import { DISTILLER_SENTINEL } from "./types.ts";
-import { serializeContent } from "./serialize.ts";
-import { getDistillerSystemPrompt, getDistillerUserTemplate, renderTemplate } from "./prompt-loader.ts";
+import { DISTILLER_SENTINEL } from "./types.js";
+import { serializeContent } from "./serialize.js";
+import { getDistillerSystemPrompt, getDistillerUserTemplate, renderTemplate } from "./prompt-loader.js";
 
 export async function distillWithSameModel(
 	model: Model<Api>,
@@ -12,7 +12,7 @@ export async function distillWithSameModel(
 	originalSystemPrompt: string,
 	maxTokens: number,
 	signal?: AbortSignal,
-): Promise<{ passthrough: boolean; note: string; thinking?: string }> {
+): Promise<{ passthrough: boolean; note: string; thinking?: string; usage: { input: number; output: number; outputVisible: number } }> {
 	const contentText = serializeContent(content);
 
 	const lengthNote =
@@ -65,10 +65,19 @@ export async function distillWithSameModel(
 		})
 		.trim();
 	const thinking = thinkingBlocks.length > 0 ? thinkingBlocks.join("\n") : undefined;
+	const outputVisible =
+		text.length > 0
+			? Math.max(0, Math.round(response.usage.output * Math.min(strippedText.length / text.length, 1)))
+			: response.usage.output;
 
 	const normalized = strippedText.trim();
 	if (!normalized) {
-		return { passthrough: true, note: DISTILLER_SENTINEL, thinking };
+		return {
+			passthrough: true,
+			note: DISTILLER_SENTINEL,
+			thinking,
+			usage: { input: response.usage.input, output: response.usage.output, outputVisible },
+		};
 	}
 
 	const sentinelLike = normalized
@@ -77,14 +86,25 @@ export async function distillWithSameModel(
 		.trim();
 
 	if (sentinelLike === DISTILLER_SENTINEL) {
-		return { passthrough: true, note: strippedText, thinking };
+		return {
+			passthrough: true,
+			note: strippedText,
+			thinking,
+			usage: { input: response.usage.input, output: response.usage.output, outputVisible },
+		};
 	}
 	if (strippedText.length >= contentText.length) {
 		return {
 			passthrough: true,
 			note: "[FAILING DISTILLATION: " + strippedText.length + " >= " + contentText.length + "]" + strippedText,
 			thinking,
+			usage: { input: response.usage.input, output: response.usage.output, outputVisible },
 		};
 	}
-	return { passthrough: false, note: strippedText, thinking };
+	return {
+		passthrough: false,
+		note: strippedText,
+		thinking,
+		usage: { input: response.usage.input, output: response.usage.output, outputVisible },
+	};
 }

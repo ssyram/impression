@@ -1,6 +1,6 @@
 # Impression System
 
-这是一个可即插即用的 [pi](https://github.com/badlogic/pi-mono) 扩展。它会使用当前激活的 LLM，将较长的工具结果压缩成简洁的 impression，并保留原始内容，供后续按需召回。
+没有人干活要先把工作手册背下来；略读一遍，留下“印象”就开工才是正确做法。Impression System (印象系统) 是一个可即插即用的 [pi](https://github.com/badlogic/pi-mono) 扩展：它会使用当前激活的 LLM，将较长的工具结果压缩成简洁的 impression，并保留原始内容，供后续按需召回。
 
 ## 要解决的问题
 
@@ -99,7 +99,8 @@ impression/
 {
   "skipDistillation": [],
   "minLength": 2048,
-  "maxRecallBeforePassthrough": 1
+  "maxRecallBeforePassthrough": 1,
+  "showData": false
 }
 ```
 
@@ -108,6 +109,7 @@ impression/
 | `skipDistillation` | `string[]` | `[]` | 永不蒸馏的工具名。支持精确匹配（`"bash"`）或 glob 前缀（`"background_*"`）。 |
 | `minLength` | `number` | `2048` | 触发蒸馏所需的最小文本长度（字符数）。 |
 | `maxRecallBeforePassthrough` | `number` | `1` | 切换为完整透传前，召回时返回“重新蒸馏笔记”的最大次数。 |
+| `showData` | `boolean` | `false` | 显示每次蒸馏的 token 数据（`old`、`ori`、`new`），并在底部持续累积显示：原文 + 印象 token。 |
 
 配置会在每次会话启动时重新加载，因此修改后无需重启 pi。
 

@@ -1,6 +1,6 @@
 # Impression System
 
-A plug-and-play extension for [pi](https://github.com/badlogic/pi-mono) that automatically compresses long tool results into compact "impressions" using the active LLM, storing the originals for on-demand recall.
+Nobody memorizes a full handbook before doing real work; we skim, keep an impression, and move. LLMs should do the same: leave an impression and work without carrying wasteful details. Impression is a plug-and-play extension for [pi](https://github.com/badlogic/pi-mono) that automatically compresses long tool results into compact "impressions" using the active LLM, while storing originals for on-demand recall.
 
 ## The Problem
 
@@ -99,7 +99,8 @@ Create `.pi/impression.json` in your project root (optional — all fields have 
 {
   "skipDistillation": [],
   "minLength": 2048,
-  "maxRecallBeforePassthrough": 1
+  "maxRecallBeforePassthrough": 1,
+  "showData": false
 }
 ```
 
@@ -108,6 +109,7 @@ Create `.pi/impression.json` in your project root (optional — all fields have 
 | `skipDistillation` | `string[]` | `[]` | Tool names to never distill. Exact match (`"bash"`) or glob prefix (`"background_*"`). |
 | `minLength` | `number` | `2048` | Minimum text length (chars) to trigger distillation. |
 | `maxRecallBeforePassthrough` | `number` | `1` | Recalls returning re-distilled notes before switching to full passthrough. |
+| `showData` | `boolean` | `false` | Shows per-distillation token data (`old`, `ori`, `new`) and keeps a cumulative footer status: original + impression tokens. |
 
 Config is reloaded on every session start — edit it without restarting pi.
 

@@ -1,6 +1,6 @@
 import type { Api, ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
-import type { ImpressionEntry } from "./types.ts";
-import { getImpressionTextTemplate, renderTemplate } from "./prompt-loader.ts";
+import type { ImpressionEntry } from "./types.js";
+import { getImpressionTextTemplate, renderTemplate } from "./prompt-loader.js";
 
 export function buildImpressionText(id: string, note: string): string {
 	return renderTemplate(getImpressionTextTemplate(), { id, note });
