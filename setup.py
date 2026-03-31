@@ -9,10 +9,11 @@ Cross-platform installer that:
 
 Supports macOS, Linux, and Windows.
 """
+from __future__ import annotations
 
-import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -44,7 +45,10 @@ def error(text: str) -> None:
 def ask_yes_no(prompt: str, default: bool = True) -> bool:
     suffix = " [Y/n] " if default else " [y/N] "
     while True:
-        answer = input(f"  {prompt}{suffix}").strip().lower()
+        try:
+            answer = input(f"  {prompt}{suffix}").strip().lower()
+        except EOFError:
+            return default
         if answer == "":
             return default
         if answer in ("y", "yes"):
@@ -58,7 +62,10 @@ def ask_input(prompt: str, default: str = "") -> str:
     if default:
         display += f" [{default}]"
     display += ": "
-    answer = input(display).strip()
+    try:
+        answer = input(display).strip()
+    except EOFError:
+        return default
     return answer if answer else default
 
 
@@ -66,8 +73,8 @@ def which(cmd: str) -> str | None:
     return shutil.which(cmd)
 
 
-def run(cmd: list[str], check: bool = True, capture: bool = False, **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, check=check, capture_output=capture, text=True, **kwargs)
+def run(cmd: list[str], check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, check=check, capture_output=capture, text=True)
 
 
 def impression_dir() -> Path:
@@ -85,8 +92,11 @@ def ensure_pi() -> bool:
     if which("pi"):
         try:
             result = run(["pi", "--version"], capture=True, check=False)
-            version = result.stdout.strip() or result.stderr.strip()
-            info(f"pi is already installed: {version}")
+            if result.returncode == 0:
+                version = result.stdout.strip() or result.stderr.strip()
+                info(f"pi is already installed: {version}")
+            else:
+                info("pi binary found but could not determine version.")
             return True
         except Exception:
             info("pi binary found but could not determine version.")
@@ -111,6 +121,9 @@ def ensure_pi() -> bool:
     except subprocess.CalledProcessError as e:
         error(f"npm install failed (exit code {e.returncode}).")
         warn("Try running manually: npm install -g @mariozechner/pi-coding-agent")
+        if platform.system() != "Windows":
+            warn("If you get a permission error, try: sudo npm install -g @mariozechner/pi-coding-agent")
+            warn("Or use nvm to manage Node.js installations without sudo.")
         return False
 
 
@@ -131,10 +144,16 @@ def get_shell_profile() -> Path:
     system = platform.system()
     home = Path.home()
     if system == "Windows":
-        # PowerShell profile
-        ps_profile = home / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
-        if ps_profile.parent.exists():
-            return ps_profile
+        # PowerShell profile — check several candidate locations
+        user_profile = Path(os.environ.get("USERPROFILE", str(home)))
+        candidates = [
+            user_profile / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
+            user_profile / "Documents" / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
+            home / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
+        ]
+        for ps_profile in candidates:
+            if ps_profile.parent.exists():
+                return ps_profile
         return home / ".bashrc"  # Git Bash / WSL fallback
     shell = os.environ.get("SHELL", "/bin/bash")
     if "zsh" in shell:
@@ -173,6 +192,7 @@ def configure_api_keys() -> None:
     try:
         idx = int(choice)
     except ValueError:
+        warn("Invalid input, defaulting to provider 1.")
         idx = 1
 
     if 1 <= idx <= len(PROVIDERS):
@@ -191,6 +211,9 @@ def configure_api_keys() -> None:
         custom_url = ask_input("Enter your provider base URL (e.g. http://localhost:11434)")
         env_var_name = ask_input("Environment variable name for the API key (leave empty if none)")
         if env_var_name:
+            if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', env_var_name):
+                warn("Invalid environment variable name (must match [A-Za-z_][A-Za-z0-9_]*). Skipping.")
+                return
             value = ask_input(f"Enter the API key for {env_var_name}")
             if value:
                 chosen_env_var = env_var_name
@@ -204,22 +227,37 @@ def configure_api_keys() -> None:
         profile = get_shell_profile()
         if ask_yes_no(f"Append export to {profile}?"):
             system = platform.system()
+            # Escape value for the target shell to prevent shell injection
             if system == "Windows" and "PowerShell" in str(profile):
-                line = f'\n$env:{chosen_env_var} = "{chosen_value}"\n'
+                # PowerShell: single-quote the value, double internal single quotes
+                escaped = chosen_value.replace("'", "''")
+                line = f"\n$env:{chosen_env_var} = '{escaped}'\n"
             elif "fish" in str(profile):
-                line = f'\nset -gx {chosen_env_var} "{chosen_value}"\n'
+                # fish: use single quotes, escape backslashes and single quotes
+                escaped = chosen_value.replace("\\", "\\\\").replace("'", "\\'")
+                line = f"\nset -gx {chosen_env_var} '{escaped}'\n"
             else:
-                line = f'\nexport {chosen_env_var}="{chosen_value}"\n'
+                # bash/zsh: single-quote the value (safest), escape internal single quotes
+                escaped = chosen_value.replace("'", "'\\''")
+                line = f"\nexport {chosen_env_var}='{escaped}'\n"
 
-            with open(profile, "a") as f:
-                f.write(line)
+            try:
+                with open(profile, "a", encoding="utf-8") as f:
+                    f.write(line)
+            except OSError as e:
+                error(f"Could not write to {profile}: {e}")
+                warn("Please check the file manually for any partial writes.")
+                info("You can add the export manually to your shell profile.")
+                os.environ[chosen_env_var] = chosen_value
+                return
             info(f"Appended to {profile}")
+            info(f"Note: Ensure {profile} has appropriate permissions (e.g. 600) to protect your API key.")
             info(f"Run `source {profile}` or open a new terminal to activate.")
             # Also set for current process so step 3 can use pi
             os.environ[chosen_env_var] = chosen_value
         else:
-            info(f"You can add it manually:")
-            info(f'  export {chosen_env_var}="{chosen_value}"')
+            info("You can add it manually:")
+            info(f"  export {chosen_env_var}=<your-key>")
             os.environ[chosen_env_var] = chosen_value
 
     if custom_url:
@@ -280,7 +318,11 @@ def manual_symlink(ext_dir: Path) -> None:
         if system == "Windows":
             # Windows requires special handling for symlinks
             # Use directory junction as fallback (no admin needed)
-            run(["cmd", "/c", "mklink", "/J", str(target), str(ext_dir)], check=True)
+            # Use shell=True to handle paths with spaces correctly
+            subprocess.run(
+                f'cmd /c mklink /J "{target}" "{ext_dir}"',
+                shell=True, check=True,
+            )
         else:
             target.symlink_to(ext_dir)
         info(f"Symlinked {target} -> {ext_dir}")
@@ -304,16 +346,33 @@ def main() -> None:
     info(f"Python: {sys.version.split()[0]}")
     print()
 
-    ensure_pi()
+    pi_ok = ensure_pi()
     configure_api_keys()
-    install_extension()
 
-    heading("Done!")
-    info("Run `pi` to start a coding session with impression-powered context compression.")
+    if pi_ok:
+        install_extension()
+    else:
+        heading("Step 3: Install impression extension (skipped)")
+        warn("Skipping extension installation because pi is not available.")
+        info("After installing pi, run this setup script again or install manually:")
+        info(f"  pi install {impression_dir()}")
+
+    heading("Setup Complete")
+    if pi_ok:
+        info("Run `pi` to start a coding session with impression-powered context compression.")
+    else:
+        warn("pi was not installed. Please install it before using impression.")
     info("Configuration: create .pi/impression.json in your project root (optional).")
     info("Documentation: see README.md in this directory.")
     print()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n  [*] Setup interrupted by user. Exiting.")
+        sys.exit(130)
+    except EOFError:
+        print("\n\n  [*] No input available. Exiting.")
+        sys.exit(1)

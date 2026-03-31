@@ -4,3 +4,4 @@ node_modules/
 *.map
 .pi/
 /_*.md
+__pycache__/setup.cpython-311.pyc
