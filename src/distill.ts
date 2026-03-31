@@ -56,10 +56,14 @@ export async function distillWithSameModel(
 		.join("\n")
 		.trim();
 
-	// Extract and strip <thinking> blocks
+	// Extract and strip <thinking> and <think> blocks
 	const thinkingBlocks: string[] = [];
 	const strippedText = text
 		.replace(/<thinking>([\s\S]*?)<\/thinking>/g, (_match, content) => {
+			thinkingBlocks.push(content.trim());
+			return "";
+		})
+		.replace(/<think>([\s\S]*?)<\/think>/g, (_match, content) => {
 			thinkingBlocks.push(content.trim());
 			return "";
 		})
