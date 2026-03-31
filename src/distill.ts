@@ -2,7 +2,7 @@ import { type Api, complete, type ImageContent, type Model, type TextContent } f
 import { DISTILLER_SENTINEL } from "./types.js";
 import { serializeContent } from "./serialize.js";
 import { getDistillerSystemPrompt, getDistillerUserTemplate, renderTemplate } from "./prompt-loader.js";
-import type { PromptVariant } from "./prompt-loader.js";
+import type { PromptVariant } from "./types.js";
 
 /**
  * Model ID prefixes whose models can maintain identity framing without
@@ -21,8 +21,14 @@ function selectVariant(model: Model<Api>): PromptVariant {
 	return "third-person";
 }
 
+function resolveVariant(model: Model<Api>, debugDistillMode?: PromptVariant): PromptVariant {
+	if (debugDistillMode) return debugDistillMode;
+	return selectVariant(model);
+}
+
 export async function distillWithSameModel(
 	model: Model<Api>,
+	debugDistillMode: PromptVariant | undefined,
 	auth: { apiKey?: string; headers?: Record<string, string> },
 	toolName: string,
 	content: (TextContent | ImageContent)[],
@@ -32,7 +38,7 @@ export async function distillWithSameModel(
 	signal?: AbortSignal,
 	onPromptVersion?: (version: string) => void,
 ): Promise<{ passthrough: boolean; note: string; thinking?: string }> {
-	const variant = selectVariant(model);
+	const variant = resolveVariant(model, debugDistillMode);
 	if (onPromptVersion) onPromptVersion(variant);
 
 	const contentText = serializeContent(content);

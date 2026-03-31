@@ -12,6 +12,7 @@ import { Type } from "@sinclair/typebox";
 import { loadConfig, resolveConfig, shouldSkipDistillation } from "./src/config.js";
 import { distillWithSameModel } from "./src/distill.js";
 import { formatOriginalCall } from "./src/format-call.js";
+import { getImpressionSystemAppendTemplate } from "./src/prompt-loader.js";
 import { buildImpressionText, createPassthroughToolResult, createRecallToolResult, notifyImpressionSkip, resolveStoredModel } from "./src/result-builders.js";
 import { serializeContent } from "./src/serialize.js";
 import { CONFIG_FILE_NAME, PASSTHROUGH_MODE_ENTRY_TYPE, getEntryData, getPassthroughModeData, isImpressionEntry, isPassthroughModeEntry } from "./src/types.js";
@@ -67,6 +68,10 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		cfg = resolveConfig(loadConfig());
+		if (cfg.debugDistillMode && !cfg.debug) {
+			ctx.ui.notify('[impression] Ignoring "debug:distill-mode" because "debug" is not enabled.', "warning");
+			cfg.debugDistillMode = undefined;
+		}
 		cumulativeOriginalChars = 0;
 		cumulativeImpressionChars = 0;
 		passthroughRemaining = 0;
@@ -82,6 +87,12 @@ export default function (pi: ExtensionAPI) {
 			impressions.set(data.id, data);
 		}
 		updateShowDataStatus(ctx);
+	});
+
+	pi.on("before_agent_start", async (event) => {
+		return {
+			systemPrompt: `${event.systemPrompt}\n\n${getImpressionSystemAppendTemplate()}`,
+		};
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
@@ -131,6 +142,7 @@ export default function (pi: ExtensionAPI) {
 		try {
 			distillation = await distillWithSameModel(
 				model,
+				cfg.debugDistillMode,
 				{ apiKey: auth.apiKey, headers: auth.headers },
 				event.toolName,
 				event.content,
@@ -220,6 +232,14 @@ export default function (pi: ExtensionAPI) {
 				throw new Error(`Impression not found: ${args.id}`);
 			}
 
+			if (passthroughRemaining > 0) {
+				passthroughRemaining--;
+				persistPassthroughRemaining();
+				ctx.ui.notify(`[impression] Passthrough mode (${passthroughRemaining} remaining)`, "info");
+				updateRecallShowData(ctx, impression, "passthrough", 0);
+				return createPassthroughToolResult(impression.fullContent);
+			}
+
 			if (impression.recallCount >= cfg.maxRecall) {
 				updateRecallShowData(ctx, impression, "passthrough", 0);
 				return createPassthroughToolResult(impression.fullContent);
@@ -250,6 +270,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				distillation = await distillWithSameModel(
 					model,
+					cfg.debugDistillMode,
 					{ apiKey: auth.apiKey, headers: auth.headers },
 					impression.toolName,
 					impression.fullContent,

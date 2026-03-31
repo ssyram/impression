@@ -6,7 +6,6 @@
 {{visibleHistory}}
 </visible_history_before_tool_result>
 
-The following is the tool result to compress into your working memory.
 Tool: {{toolName}}
 
 <tool_result>

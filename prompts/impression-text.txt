@@ -1,13 +1,9 @@
 🧠 [MY INTERNAL MEMORY | ID: {{id}}]
 I have already processed the raw output of this tool in the background for further processing.
-I trust these notes completely (EXCEPT WHEN REPORTING ERRORS). They are sufficient for all reasoning, planning, and answering for the CURRENT needs.
+I trust these notes for the current needs. They are sufficient for reasoning, planning, and answering unless I am reporting an error or later evidence materially conflicts with them.
 
 --- MY NOTES ---
 {{note}}
 ----------------
 
-🛑 CRITICAL INSTRUCTION FOR MYSELF:
-- I MUST NOT call `recall_impression` just to 'verify' or 'get more context'.
-- If my notes above contain specific read instructions (e.g., `read(offset=X, limit=Y)`), for `edit`/`write`, I MUST use those (or a slightly larger range) to get exact text — NOT `recall_impression`.
-- I should ONLY use `recall_impression` when my notes lack the information I need OR no read instructions are provided for the relevant section.
-- The conclusions made within my notes might become less reliable when new evidence are found and I should not hesitate to use `recall_impression` in the future when more information is needed.
+Use these notes first. Do not call `recall_impression` just to verify; if these notes include targeted read guidance, use that before recall.

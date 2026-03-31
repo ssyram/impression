@@ -1,11 +1,10 @@
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { PromptVariant } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPTS_DIR = join(__dirname, "..", "prompts");
-
-export type PromptVariant = "first-person" | "third-person";
 
 function readPrompt(name: string): string {
 	return readFileSync(join(PROMPTS_DIR, name), "utf-8");
@@ -32,6 +31,10 @@ export function getDistillerUserTemplate(variant: PromptVariant): string {
 
 export function getImpressionTextTemplate(): string {
 	return getCached("impression-text.txt");
+}
+
+export function getImpressionSystemAppendTemplate(): string {
+	return getCached("impression-system-append.txt");
 }
 
 export function renderTemplate(template: string, vars: Record<string, string>): string {
