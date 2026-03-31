@@ -5,27 +5,33 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPTS_DIR = join(__dirname, "..", "prompts");
 
+export type PromptVariant = "first-person" | "third-person";
+
 function readPrompt(name: string): string {
 	return readFileSync(join(PROMPTS_DIR, name), "utf-8");
 }
 
-let cachedDistillerSystem: string | undefined;
-let cachedImpressionText: string | undefined;
-let cachedDistillerUser: string | undefined;
+const promptCache = new Map<string, string>();
 
-export function getDistillerSystemPrompt(): string {
-	cachedDistillerSystem ??= readPrompt("distiller-objective.md");
-	return cachedDistillerSystem;
+function getCached(name: string): string {
+	let cached = promptCache.get(name);
+	if (cached === undefined) {
+		cached = readPrompt(name);
+		promptCache.set(name, cached);
+	}
+	return cached;
+}
+
+export function getDistillerSystemPrompt(variant: PromptVariant): string {
+	return getCached(`distiller-${variant}.md`);
+}
+
+export function getDistillerUserTemplate(variant: PromptVariant): string {
+	return getCached(`distiller-user-${variant}.md`);
 }
 
 export function getImpressionTextTemplate(): string {
-	cachedImpressionText ??= readPrompt("impression-text.txt");
-	return cachedImpressionText;
-}
-
-export function getDistillerUserTemplate(): string {
-	cachedDistillerUser ??= readPrompt("distiller-user-objective.md");
-	return cachedDistillerUser;
+	return getCached("impression-text.txt");
 }
 
 export function renderTemplate(template: string, vars: Record<string, string>): string {

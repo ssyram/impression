@@ -2,6 +2,24 @@ import { type Api, complete, type ImageContent, type Model, type TextContent } f
 import { DISTILLER_SENTINEL } from "./types.js";
 import { serializeContent } from "./serialize.js";
 import { getDistillerSystemPrompt, getDistillerUserTemplate, renderTemplate } from "./prompt-loader.js";
+import type { PromptVariant } from "./prompt-loader.js";
+
+/**
+ * Model ID prefixes whose models can maintain identity framing without
+ * degenerating into roleplay / orchestration slop.
+ * Matched against model.id with a startsWith check, so "claude" covers
+ * "claude-sonnet-4-..." etc. regardless of provider.
+ */
+const FIRST_PERSON_MODEL_PREFIXES: readonly string[] = [
+	"claude",
+	"gemini",
+];
+
+function selectVariant(model: Model<Api>): PromptVariant {
+	const id = model.id.toLowerCase();
+	if (FIRST_PERSON_MODEL_PREFIXES.some((prefix) => id.startsWith(prefix))) return "first-person";
+	return "third-person";
+}
 
 export async function distillWithSameModel(
 	model: Model<Api>,
@@ -14,8 +32,8 @@ export async function distillWithSameModel(
 	signal?: AbortSignal,
 	onPromptVersion?: (version: string) => void,
 ): Promise<{ passthrough: boolean; note: string; thinking?: string }> {
-	const promptVersion = "default";
-	if (onPromptVersion) onPromptVersion(promptVersion);
+	const variant = selectVariant(model);
+	if (onPromptVersion) onPromptVersion(variant);
 
 	const contentText = serializeContent(content);
 
@@ -26,13 +44,13 @@ export async function distillWithSameModel(
 				? " (considered relatively short)"
 				: "";
 
-	const systemPrompt = renderTemplate(getDistillerSystemPrompt(), {
+	const systemPrompt = renderTemplate(getDistillerSystemPrompt(variant), {
 		contentLength: String(contentText.length),
 		lengthNote,
 		sentinel: DISTILLER_SENTINEL,
 	});
 
-	const userPrompt = renderTemplate(getDistillerUserTemplate(), {
+	const userPrompt = renderTemplate(getDistillerUserTemplate(variant), {
 		originalSystemPrompt: originalSystemPrompt || "[none]",
 		visibleHistory: visibleHistory || "[none]",
 		toolName,

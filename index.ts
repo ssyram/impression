@@ -144,19 +144,23 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus("impression-distill", undefined);
 		}
 
-		if (distillation.thinking) {
-			ctx.ui.notify(`[impression] Thinking: ${distillation.thinking}`, "info");
-		}
-
+		const ptLevel = cfg.debug ? "warning" : "info";
 		if (distillation.passthrough) {
+			if (distillation.thinking) {
+				ctx.ui.notify(`[impression] Passthrough thinking: ${distillation.thinking}`, ptLevel);
+			}
 			if (cfg.showData) {
 				cumulativeOriginalChars += fullText.length;
 				cumulativeImpressionChars += fullText.length;
 				ctx.ui.notify(`[impression:data] passthrough original=${fullText.length}, impression=${fullText.length}`, "info");
 				updateShowDataStatus(ctx);
 			}
-			ctx.ui.notify(`[impression] Distillation passthrough with text: ${distillation.note}`, "info");
+			ctx.ui.notify(`[impression] Passthrough for ${event.toolName}`, ptLevel);
 			return { content: event.content };
+		}
+
+		if (distillation.thinking) {
+			ctx.ui.notify(`[impression] Thinking: ${distillation.thinking}`, "info");
 		}
 
 		if (cfg.showData) {
@@ -259,11 +263,11 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.setStatus("impression-distill", undefined);
 			}
 
-			if (distillation.thinking) {
-				ctx.ui.notify(`[impression] Recall thinking: ${distillation.thinking}`, "info");
-			}
-
+			const ptLevel = cfg.debug ? "warning" : "info";
 			if (distillation.passthrough) {
+				if (distillation.thinking) {
+					ctx.ui.notify(`[impression] Recall passthrough thinking: ${distillation.thinking}`, ptLevel);
+				}
 				impression.recallCount = cfg.maxRecall;
 				pi.appendEntry("impression-v1", impression);
 				updateRecallShowData(ctx, impression, "passthrough", distillation.note.length);
