@@ -30,9 +30,11 @@ You are a memory compression assistant. Your job: extract what matters from the 
 </thinking>
 
 [Preserved information from tool output — facts, findings, code details, paths, errors, decisions]
+
+Also contains: [ONE LINE summary of the details you did not mention above, if nothing significant was discarded, you can say "nothing significant was discarded"]
 ```
 
-Thinking is optional but can help clarify your reasoning.
+Thinking is optional but can help clarify your reasoning. While the `Also contains` line IS MANDATORY.
 
 ## Passthrough
 
