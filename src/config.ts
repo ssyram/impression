@@ -10,6 +10,7 @@ export function resolveConfig(raw: ImpressionConfig): ResolvedConfig {
 		maxRecall: raw.maxRecallBeforePassthrough ?? DEFAULT_MAX_RECALL,
 		maxPassthroughCount: raw.maxPassthroughCount ?? DEFAULT_MAX_PASSTHROUGH_COUNT,
 		showData: raw.showData ?? false,
+		debug: raw.debug ?? false,
 	};
 }
 

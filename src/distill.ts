@@ -12,7 +12,11 @@ export async function distillWithSameModel(
 	originalSystemPrompt: string,
 	maxTokens: number,
 	signal?: AbortSignal,
+	onPromptVersion?: (version: string) => void,
 ): Promise<{ passthrough: boolean; note: string; thinking?: string }> {
+	const promptVersion = "default";
+	if (onPromptVersion) onPromptVersion(promptVersion);
+
 	const contentText = serializeContent(content);
 
 	const lengthNote =

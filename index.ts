@@ -45,10 +45,9 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus("impression-data", undefined);
 			return;
 		}
-		const total = cumulativeOriginalChars + cumulativeImpressionChars;
 		ctx.ui.setStatus(
 			"impression-data",
-			`[impression:data] original ${cumulativeOriginalChars}; impression ${cumulativeImpressionChars} = ${total}`,
+			`[impression:data] original ${cumulativeOriginalChars}; impression ${cumulativeImpressionChars}`,
 		);
 	}
 
@@ -139,6 +138,7 @@ export default function (pi: ExtensionAPI) {
 				originalSystemPrompt,
 				Math.max(Math.ceil(cfg.minLength / 2), 1024),
 				ctx.signal,
+				cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
 			);
 		} finally {
 			ctx.ui.setStatus("impression-distill", undefined);
@@ -253,6 +253,7 @@ export default function (pi: ExtensionAPI) {
 					originalSystemPrompt,
 					Math.max(Math.ceil(cfg.minLength / 2), 1024),
 					signal,
+					cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
 				);
 			} finally {
 				ctx.ui.setStatus("impression-distill", undefined);

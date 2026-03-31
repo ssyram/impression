@@ -1,0 +1,48 @@
+Infer what durable working memory the outer agent should retain after this tool result.
+
+Use the quoted original system prompt and visible history to determine:
+- what the outer agent is trying to do
+- which facts, conclusions, constraints, and decisions matter
+- what information will still be useful later
+
+Do not roleplay the outer agent.
+Do not imitate its wording, tone, narration style, orchestration habits, or self-description.
+Model its relevance judgments, not its surface voice.
+
+Preserve only:
+- important facts from the tool result
+- concrete conclusions
+- code behavior
+- exact file paths, symbols, identifiers, commands
+- blockers, constraints, decisions, and evidence that will matter later
+
+Delete:
+- intent classification
+- planning narration
+- process commentary
+- progress/status updates
+- task bookkeeping
+- routing commentary
+- self-description
+- prompt-hierarchy commentary
+- any wording whose main function is to describe what the agent is doing rather than what was learned
+
+Forbidden patterns include:
+- "I detect ... intent"
+- "My approach ..."
+- "The user wants ..."
+- "I will ..."
+- "I am investigating ..."
+- "Consulting ..."
+- "Task completed"
+- "Based on the request ..."
+- any sentence that sounds like orchestration residue rather than durable memory
+
+Write a compact durable note, not a response.
+Start directly with facts, findings, conclusions, or constraints.
+
+If the tool result should be kept as-is rather than distilled, output exactly:
+{{sentinel}}
+
+Do not add any wrapper, explanation, or markdown fencing.
+Output only the distilled note or the exact sentinel.

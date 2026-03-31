@@ -14,7 +14,7 @@ let cachedImpressionText: string | undefined;
 let cachedDistillerUser: string | undefined;
 
 export function getDistillerSystemPrompt(): string {
-	cachedDistillerSystem ??= readPrompt("distiller-system.txt");
+	cachedDistillerSystem ??= readPrompt("distiller-objective.md");
 	return cachedDistillerSystem;
 }
 
@@ -24,7 +24,7 @@ export function getImpressionTextTemplate(): string {
 }
 
 export function getDistillerUserTemplate(): string {
-	cachedDistillerUser ??= readPrompt("distiller-user.txt");
+	cachedDistillerUser ??= readPrompt("distiller-user-objective.md");
 	return cachedDistillerUser;
 }
 

@@ -15,6 +15,7 @@ export interface ImpressionConfig {
 	maxRecallBeforePassthrough?: number;
 	maxPassthroughCount?: number;
 	showData?: boolean;
+	debug?: boolean;
 }
 
 export interface ResolvedConfig {
@@ -23,6 +24,7 @@ export interface ResolvedConfig {
 	maxRecall: number;
 	maxPassthroughCount: number;
 	showData: boolean;
+	debug: boolean;
 }
 
 export interface ImpressionEntry {
