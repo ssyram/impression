@@ -9,7 +9,10 @@ export const DEFAULT_MAX_PASSTHROUGH_COUNT = 2;
 export const DISTILLER_SENTINEL = "<passthrough/>";
 export const CONFIG_FILE_NAME = "impression.json";
 
+export type PromptVariant = "first-person" | "third-person";
+
 export interface ImpressionConfig {
+	"debug:distill-mode"?: PromptVariant;
 	skipDistillation?: string[];
 	minLength?: number;
 	maxRecallBeforePassthrough?: number;
@@ -19,6 +22,7 @@ export interface ImpressionConfig {
 }
 
 export interface ResolvedConfig {
+	debugDistillMode?: PromptVariant;
 	skipDistillation: string[];
 	minLength: number;
 	maxRecall: number;

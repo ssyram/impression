@@ -97,6 +97,8 @@ Create `.pi/impression.json` in your project root (optional — all fields have 
 
 ```json
 {
+  "debug": true,
+  "debug:distill-mode": "third-person",
   "skipDistillation": [],
   "minLength": 2048,
   "maxRecallBeforePassthrough": 1,
@@ -106,12 +108,16 @@ Create `.pi/impression.json` in your project root (optional — all fields have 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `debug` | `boolean` | `false` | Enables debug notifications and debug-only options. |
+| `debug:distill-mode` | `"first-person" \| "third-person"` | unset | Debug override for distiller prompt mode. Works only when `debug: true`; otherwise it is ignored with a warning. |
 | `skipDistillation` | `string[]` | `[]` | Tool names to never distill. Exact match (`"bash"`) or glob prefix (`"background_*"`). |
 | `minLength` | `number` | `2048` | Minimum text length (chars) to trigger distillation. |
 | `maxRecallBeforePassthrough` | `number` | `1` | Recalls returning re-distilled notes before switching to full passthrough. |
 | `showData` | `boolean` | `false` | Shows per-distillation token data (`old`, `ori`, `new`) and keeps a cumulative footer status: original + impression tokens. |
 
 Config is reloaded on every session start — edit it without restarting pi.
+
+When `debug:distill-mode` is set (and `debug: true`), Impression always uses that prompt variant and does not switch based on the active model. When unset, it keeps model-based routing.
 
 ## What to Expect
 
