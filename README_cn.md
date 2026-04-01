@@ -109,7 +109,7 @@ impression/
 | `skipDistillation` | `string[]` | `[]` | 永不蒸馏的工具名。支持精确匹配（`"bash"`）或 glob 前缀（`"background_*"`）。 |
 | `minLength` | `number` | `2048` | 触发蒸馏所需的最小文本长度（字符数）。 |
 | `maxRecallBeforePassthrough` | `number` | `1` | 切换为完整透传前，召回时返回“重新蒸馏笔记”的最大次数。 |
-| `showData` | `boolean` | `false` | 显示每次蒸馏的 token 数据（`old`、`ori`、`new`），并在底部持续累积显示：原文 + 印象 token。 |
+| `showData` | `boolean` | `false` | 显示每次蒸馏的字符数据，格式为 `[impression:data] XXX / YYY = ZZ%`；其中展示值使用 `k`/`M` 等紧凑格式并保留两位小数，但比例始终基于底层精确字符数计算；底部状态会持续累积显示 `impression / original`。 |
 
 配置会在每次会话启动时重新加载，因此修改后无需重启 pi。
 

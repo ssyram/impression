@@ -113,7 +113,7 @@ Create `.pi/impression.json` in your project root (optional — all fields have 
 | `skipDistillation` | `string[]` | `[]` | Tool names to never distill. Exact match (`"bash"`) or glob prefix (`"background_*"`). |
 | `minLength` | `number` | `2048` | Minimum text length (chars) to trigger distillation. |
 | `maxRecallBeforePassthrough` | `number` | `1` | Recalls returning re-distilled notes before switching to full passthrough. |
-| `showData` | `boolean` | `false` | Shows per-distillation token data (`old`, `ori`, `new`) and keeps a cumulative footer status: original + impression tokens. |
+| `showData` | `boolean` | `false` | Shows per-distillation char data as `[impression:data] XXX / YYY = ZZ%`, where the display uses compact `k`/`M` formatting with two decimals, while the ratio is calculated from exact underlying character counts and the footer keeps a cumulative `impression / original` status. |
 
 Config is reloaded on every session start — edit it without restarting pi.
 

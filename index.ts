@@ -15,7 +15,7 @@ import { formatOriginalCall } from "./src/format-call.js";
 import { getImpressionSystemAppendTemplate } from "./src/prompt-loader.js";
 import { buildImpressionText, createPassthroughToolResult, createRecallToolResult, notifyImpressionSkip, resolveStoredModel } from "./src/result-builders.js";
 import { serializeContent } from "./src/serialize.js";
-import { CONFIG_FILE_NAME, PASSTHROUGH_MODE_ENTRY_TYPE, getEntryData, getPassthroughModeData, isImpressionEntry, isPassthroughModeEntry } from "./src/types.js";
+import { CONFIG_FILE_NAME, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getPassthroughModeData, getSessionStatsData, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry } from "./src/types.js";
 import type { ImpressionEntry, ResolvedConfig } from "./src/types.js";
 
 const RecallImpressionParams = Type.Object({
@@ -30,6 +30,19 @@ const SkipImpressionParams = Type.Object({
 	count: Type.Optional(Type.Number({ description: "Number of tool results to pass through unchanged (default 1). Capped by config." })),
 });
 
+function formatCompactChars(value: number): string {
+	const abs = Math.abs(value);
+	if (abs >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
+	if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+	if (abs >= 1_000) return `${(value / 1_000).toFixed(2)}k`;
+	return value.toFixed(2);
+}
+
+function formatImpressionData(impressionChars: number, originalChars: number): string {
+	const ratio = originalChars > 0 ? (impressionChars / originalChars) * 100 : 0;
+	return `[impression:data] ${formatCompactChars(impressionChars)} / ${formatCompactChars(originalChars)} = ${ratio.toFixed(2)}%`;
+}
+
 export default function (pi: ExtensionAPI) {
 	const impressions = new Map<string, ImpressionEntry>();
 	let cfg: ResolvedConfig = resolveConfig(loadConfig());
@@ -41,15 +54,25 @@ export default function (pi: ExtensionAPI) {
 		pi.appendEntry(PASSTHROUGH_MODE_ENTRY_TYPE, { remaining: passthroughRemaining });
 	}
 
+	function persistSessionStats() {
+		pi.appendEntry(SESSION_STATS_ENTRY_TYPE, {
+			originalChars: cumulativeOriginalChars,
+			impressionChars: cumulativeImpressionChars,
+		});
+	}
+
+	function recordImpressionData(originalChars: number, impressionChars: number) {
+		cumulativeOriginalChars += originalChars;
+		cumulativeImpressionChars += impressionChars;
+		persistSessionStats();
+	}
+
 	function updateShowDataStatus(ctx: { ui: { setStatus(key: string, text: string | undefined): void } }) {
 		if (!cfg.showData) {
 			ctx.ui.setStatus("impression-data", undefined);
 			return;
 		}
-		ctx.ui.setStatus(
-			"impression-data",
-			`[impression:data] original ${cumulativeOriginalChars}; impression ${cumulativeImpressionChars}`,
-		);
+		ctx.ui.setStatus("impression-data", formatImpressionData(cumulativeImpressionChars, cumulativeOriginalChars));
 	}
 
 	function updateRecallShowData(
@@ -58,11 +81,12 @@ export default function (pi: ExtensionAPI) {
 		mode: "passthrough" | "distill",
 		noteChars: number,
 	) {
-		if (!cfg.showData) return;
 		const ori = impression.originalChars ?? 0;
-		const add = mode === "passthrough" ? ori : noteChars;
-		cumulativeImpressionChars += add;
-		ctx.ui.notify(`[impression:data] recall ${mode}: ori=${ori}, note=${noteChars}, add=${add}`, "info");
+		const shownImpressionChars = mode === "passthrough" ? ori : noteChars;
+		recordImpressionData(ori, shownImpressionChars);
+		if (cfg.showData) {
+			ctx.ui.notify(formatImpressionData(shownImpressionChars, ori), "info");
+		}
 		updateShowDataStatus(ctx);
 	}
 
@@ -80,6 +104,12 @@ export default function (pi: ExtensionAPI) {
 			const ptData = getPassthroughModeData(entry);
 			if (isPassthroughModeEntry(ptData)) {
 				passthroughRemaining = ptData.remaining;
+				continue;
+			}
+			const statsData = getSessionStatsData(entry);
+			if (isSessionStatsEntry(statsData)) {
+				cumulativeOriginalChars = statsData.originalChars;
+				cumulativeImpressionChars = statsData.impressionChars;
 				continue;
 			}
 			const data = getEntryData(entry);
@@ -100,13 +130,12 @@ export default function (pi: ExtensionAPI) {
 		if (passthroughRemaining > 0) {
 			passthroughRemaining--;
 			persistPassthroughRemaining();
+			const chars = serializeContent(event.content).length;
+			recordImpressionData(chars, chars);
 			if (cfg.showData) {
-				const chars = serializeContent(event.content).length;
-				cumulativeOriginalChars += chars;
-				cumulativeImpressionChars += chars;
-				ctx.ui.notify(`[impression:data] set_impression_mode passthrough: ${chars}`, "info");
-				updateShowDataStatus(ctx);
+				ctx.ui.notify(formatImpressionData(chars, chars), "info");
 			}
+			updateShowDataStatus(ctx);
 			ctx.ui.notify(`[impression] Passthrough mode (${passthroughRemaining} remaining)`, "info");
 			return;
 		}
@@ -161,12 +190,11 @@ export default function (pi: ExtensionAPI) {
 			if (distillation.thinking) {
 				ctx.ui.notify(`[impression] Passthrough thinking: ${distillation.thinking}`, ptLevel);
 			}
+			recordImpressionData(fullText.length, fullText.length);
 			if (cfg.showData) {
-				cumulativeOriginalChars += fullText.length;
-				cumulativeImpressionChars += fullText.length;
-				ctx.ui.notify(`[impression:data] passthrough original=${fullText.length}, impression=${fullText.length}`, "info");
-				updateShowDataStatus(ctx);
+				ctx.ui.notify(formatImpressionData(fullText.length, fullText.length), "info");
 			}
+			updateShowDataStatus(ctx);
 			ctx.ui.notify(`[impression] Passthrough for ${event.toolName}`, ptLevel);
 			return { content: event.content };
 		}
@@ -175,13 +203,12 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(`[impression] Thinking: ${distillation.thinking}`, "info");
 		}
 
+		const impressionChars = distillation.note.length;
+		recordImpressionData(fullText.length, impressionChars);
 		if (cfg.showData) {
-			const impressionChars = distillation.note.length;
-			cumulativeOriginalChars += fullText.length;
-			cumulativeImpressionChars += impressionChars;
-			ctx.ui.notify(`[impression:data] distill original=${fullText.length}, impression=${impressionChars}`, "info");
-			updateShowDataStatus(ctx);
+			ctx.ui.notify(formatImpressionData(impressionChars, fullText.length), "info");
 		}
+		updateShowDataStatus(ctx);
 
 		const id = randomUUID();
 		const originalChars = fullText.length;
