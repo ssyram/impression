@@ -30,11 +30,11 @@ export function getDistillerUserTemplate(variant: PromptVariant): string {
 }
 
 export function getImpressionTextTemplate(): string {
-	return getCached("impression-text.txt");
+	return getCached("impression-text.md");
 }
 
 export function getImpressionSystemAppendTemplate(): string {
-	return getCached("impression-system-append.txt");
+	return getCached("impression-system-append.md");
 }
 
 export function renderTemplate(template: string, vars: Record<string, string>): string {
