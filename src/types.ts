@@ -42,8 +42,6 @@ export interface ImpressionEntry {
 	originalChars?: number;
 	recallCount: number;
 	createdAt: number;
-	modelProvider: string;
-	modelId: string;
 }
 
 export function isImpressionEntry(value: unknown): value is ImpressionEntry {
@@ -57,14 +55,17 @@ export function isImpressionEntry(value: unknown): value is ImpressionEntry {
 		typeof record.fullText === "string" &&
 		(record.originalChars === undefined || typeof record.originalChars === "number") &&
 		typeof record.recallCount === "number" &&
-		typeof record.createdAt === "number" &&
-		typeof record.modelProvider === "string" &&
-		typeof record.modelId === "string"
+		typeof record.createdAt === "number"
 	);
+}
+
+export interface ImpressionDetails {
+	thinking?: string;
 }
 
 export interface PassthroughModeEntry {
 	remaining: number;
+	lastEstimatedChars?: number;
 }
 
 export interface SessionStatsEntry {
@@ -75,7 +76,7 @@ export interface SessionStatsEntry {
 export function isPassthroughModeEntry(value: unknown): value is PassthroughModeEntry {
 	if (!value || typeof value !== "object") return false;
 	const record = value as Record<string, unknown>;
-	return typeof record.remaining === "number";
+	return typeof record.remaining === "number" && (record.lastEstimatedChars === undefined || typeof record.lastEstimatedChars === "number");
 }
 
 export function isSessionStatsEntry(value: unknown): value is SessionStatsEntry {

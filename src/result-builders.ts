@@ -1,33 +1,27 @@
-import type { Api, ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
-import type { ImpressionEntry } from "./types.js";
+import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+import type { ImpressionDetails } from "./types.js";
 import { getImpressionTextTemplate, renderTemplate } from "./prompt-loader.js";
 
 export function buildImpressionText(id: string, note: string): string {
 	return renderTemplate(getImpressionTextTemplate(), { id, note });
 }
 
-export function createRecallToolResult(id: string, note: string): { content: TextContent[]; details: undefined } {
+export function createRecallToolResult(
+	id: string,
+	note: string,
+	details?: ImpressionDetails,
+): { content: TextContent[]; details: ImpressionDetails } {
 	return {
 		content: [{ type: "text", text: buildImpressionText(id, note) }],
-		details: undefined,
+		details: details ?? {},
 	};
 }
 
-export function createPassthroughToolResult(content: (TextContent | ImageContent)[]): {
-	content: (TextContent | ImageContent)[];
-	details: undefined;
-} {
-	return { content, details: undefined };
-}
-
-export function resolveStoredModel(
-	entry: ImpressionEntry,
-	currentModel: Model<Api> | undefined,
-): Model<Api> | undefined {
-	if (currentModel && currentModel.provider === entry.modelProvider && currentModel.id === entry.modelId) {
-		return currentModel;
-	}
-	return undefined;
+export function createPassthroughToolResult(
+	content: (TextContent | ImageContent)[],
+	details?: ImpressionDetails,
+): { content: (TextContent | ImageContent)[]; details: ImpressionDetails } {
+	return { content, details: details ?? {} };
 }
 
 export function notifyImpressionSkip(

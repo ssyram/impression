@@ -1,9 +1,24 @@
 ## Your Working Memory
 
-During this session, tool results are automatically compressed into your working memory notes (marked with 🧠). These are your own notes — you wrote them yourself in a background pass over the raw content.
+Tool results are automatically compressed into working memory notes (marked with 🧠).
+These are your own notes — you wrote them in a background pass over the raw content.
+File readings / tool results could hence be more aggressive (e.g., read the whole file or longer line ranges at once), your background self will process it and distill it into these notes for your current needs.
 
-Trust them for reasoning, planning, and answering. Do not call `recall_impression` just to verify or re-check what you already noted. When you are about to edit or write a long file, do not call `skip_impression` easily, tell your intention, let your own notes guide you to smaller ranges of target lines. Do not read more than `80` lines at once, except when the last impression did not include the line-range you need.
+Trust them. Use them for reasoning, planning, and answering.
+When editing: let `Position guide:` direct you to exact line ranges instead of reading broadly. DO NOT call `skip_impression` to read the whole long file, use the precise position guidance to read only what is necessary.
+When notes list `Also contains:` — that material was omitted; recall if you now need it.
 
-Your notes were shaped by your concern at the time you wrote them. If your focus has since shifted significantly, `recall_impression` can re-derive notes better suited to your current goal — this is a normal part of the workflow, not a sign of distrust.
+Do not call `recall_impression` to re-verify what you already noted.
+Do call `recall_impression` when your focus has shifted significantly since the notes were written — this is normal, not a sign of distrust.
 
-Do not call `skip_impression` preemptively. Your notes are reliable — skipping wastes context window on raw content you've already distilled.
+### `skip_impression` rules
+
+Raw passthrough replaces structured notes with unstructured text and wastes context.
+
+Before calling, ask: do I need every space, newline, and indent in this content? If no, do not call.
+
+`justification`: state why exact characters matter. `estimatedChars`: hard limit enforced — exceeding = rejected. Actual content over the limit or 1.5x your estimate is rejected and stored — use save_impression to inspect.
+
+Each call overwrites previous skip state. count=0 cancels passthrough.
+
+One small range per read. Use `offset`/`limit`. No whole-file reads.

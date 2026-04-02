@@ -5,6 +5,7 @@
  * See README.md for full documentation.
  */
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { buildSessionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
@@ -13,10 +14,10 @@ import { loadConfig, resolveConfig, shouldSkipDistillation } from "./src/config.
 import { distillWithSameModel } from "./src/distill.js";
 import { formatOriginalCall } from "./src/format-call.js";
 import { getImpressionSystemAppendTemplate } from "./src/prompt-loader.js";
-import { buildImpressionText, createPassthroughToolResult, createRecallToolResult, notifyImpressionSkip, resolveStoredModel } from "./src/result-builders.js";
+import { buildImpressionText, createPassthroughToolResult, createRecallToolResult, notifyImpressionSkip } from "./src/result-builders.js";
 import { serializeContent } from "./src/serialize.js";
 import { CONFIG_FILE_NAME, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getPassthroughModeData, getSessionStatsData, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry } from "./src/types.js";
-import type { ImpressionEntry, ResolvedConfig } from "./src/types.js";
+import type { ImpressionDetails, ImpressionEntry, ResolvedConfig } from "./src/types.js";
 
 const RecallImpressionParams = Type.Object({
 	id: Type.String({ description: "Impression ID" }),
@@ -27,7 +28,9 @@ function serializeVisibleHistory(messages: ReturnType<typeof buildSessionContext
 }
 
 const SkipImpressionParams = Type.Object({
-	count: Type.Optional(Type.Number({ description: "Number of tool results to pass through unchanged (default 1). Capped by config." })),
+	count: Type.Optional(Type.Number({ description: "Number of tool results to pass through unchanged (default 1). Capped by config. Set to 0 to cancel passthrough." })),
+	justification: Type.Optional(Type.String({ description: "Why you need exact content including whitespace, indentation, and naming. Required when count > 0." })),
+	estimatedChars: Type.Optional(Type.Number({ description: "Estimated characters to read. Hard limit enforced at runtime. Required when count > 0." })),
 });
 
 function formatCompactChars(value: number): string {
@@ -49,9 +52,10 @@ export default function (pi: ExtensionAPI) {
 	let cumulativeOriginalChars = 0;
 	let cumulativeImpressionChars = 0;
 	let passthroughRemaining = 0;
+	let lastEstimatedChars = 0;
 
 	function persistPassthroughRemaining() {
-		pi.appendEntry(PASSTHROUGH_MODE_ENTRY_TYPE, { remaining: passthroughRemaining });
+		pi.appendEntry(PASSTHROUGH_MODE_ENTRY_TYPE, { remaining: passthroughRemaining, lastEstimatedChars });
 	}
 
 	function persistSessionStats() {
@@ -104,6 +108,7 @@ export default function (pi: ExtensionAPI) {
 			const ptData = getPassthroughModeData(entry);
 			if (isPassthroughModeEntry(ptData)) {
 				passthroughRemaining = ptData.remaining;
+				lastEstimatedChars = ptData.lastEstimatedChars ?? 0;
 				continue;
 			}
 			const statsData = getSessionStatsData(entry);
@@ -128,16 +133,46 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_result", async (event, ctx) => {
 		if (event.toolName === "recall_impression" || event.toolName === "skip_impression") return;
 		if (passthroughRemaining > 0) {
-			passthroughRemaining--;
-			persistPassthroughRemaining();
-			const chars = serializeContent(event.content).length;
-			recordImpressionData(chars, chars);
-			if (cfg.showData) {
-				ctx.ui.notify(formatImpressionData(chars, chars), "info");
+			const fullText = serializeContent(event.content);
+			const maxChars = Math.max(cfg.minLength * 10, 10240);
+			const overEstimate = lastEstimatedChars > 0 && fullText.length > lastEstimatedChars * 1.5;
+			const overMax = fullText.length > maxChars;
+			if (overEstimate || overMax) {
+				passthroughRemaining--;
+				persistPassthroughRemaining();
+				const reason = overMax
+					? `actual content ${fullText.length} chars exceeds hard limit of ${maxChars}`
+					: `actual content ${fullText.length} chars exceeds 1.5x estimated ${lastEstimatedChars}`;
+				ctx.ui.notify(`[impression] Passthrough rejected: ${reason}.`, "warning");
+				const id = randomUUID();
+				const impression: ImpressionEntry = {
+					id,
+					toolName: event.toolName,
+					toolCallId: event.toolCallId,
+					toolInput: event.input,
+					fullContent: event.content,
+					fullText,
+					originalChars: fullText.length,
+					recallCount: 0,
+					createdAt: Date.now(),
+				};
+				impressions.set(id, impression);
+				pi.appendEntry("impression-v1", impression);
+				return {
+					content: [{ type: "text", text: `Passthrough stored but content too large (${reason}). Impression ID: ${id}. Options: (1) skip_impression again with a smaller range, (2) skip_impression count=0 to cancel and let distillation handle it, (3) save_impression to a file and use read/bash to inspect.` }],
+				};
+			} else {
+				passthroughRemaining--;
+				persistPassthroughRemaining();
+				const chars = fullText.length;
+				recordImpressionData(chars, chars);
+				if (cfg.showData) {
+					ctx.ui.notify(formatImpressionData(chars, chars), "info");
+				}
+				updateShowDataStatus(ctx);
+				ctx.ui.notify(`[impression] Passthrough mode (${passthroughRemaining} remaining)`, "info");
+				return;
 			}
-			updateShowDataStatus(ctx);
-			ctx.ui.notify(`[impression] Passthrough mode (${passthroughRemaining} remaining)`, "info");
-			return;
 		}
 		if (shouldSkipDistillation(event.toolName, cfg)) {
 			ctx.ui.notify(`[impression] Skipped distillation for "${event.toolName}" (configured in ${CONFIG_FILE_NAME})`, "info");
@@ -200,7 +235,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (distillation.thinking) {
-			ctx.ui.notify(`[impression] Thinking: ${distillation.thinking}`, "info");
+			ctx.ui.notify(`[impression] Thinking detected (${distillation.thinking.length} chars): ${distillation.thinking.slice(0, 300)}`, "warning");
 		}
 
 		const impressionChars = distillation.note.length;
@@ -222,14 +257,13 @@ export default function (pi: ExtensionAPI) {
 			originalChars,
 			recallCount: 0,
 			createdAt: Date.now(),
-			modelProvider: model.provider,
-			modelId: model.id,
 		};
 		impressions.set(id, impression);
 		pi.appendEntry("impression-v1", impression);
 
 		return {
 			content: [{ type: "text", text: buildImpressionText(id, distillation.note) }],
+			details: { thinking: distillation.thinking } satisfies ImpressionDetails,
 		};
 	});
 
@@ -237,7 +271,7 @@ export default function (pi: ExtensionAPI) {
 		name: "recall_impression",
 		label: "Recall Impression",
 		description:
-			"Recall a stored impression by ID. Before " + cfg.maxRecall + " recalls it returns distilled notes; after that it returns full passthrough content.",
+			"Recall a stored impression by ID. Returns distilled notes with updated context.",
 		parameters: RecallImpressionParams,
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
@@ -253,6 +287,22 @@ export default function (pi: ExtensionAPI) {
 			}
 			return text;
 		},
+		renderResult(result, _options, theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const contentText = result.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+			const details = result.details as ImpressionDetails | undefined;
+			if (details?.thinking) {
+				const thinkingLabel = theme.fg("muted", "[thinking] ");
+				const thinkingText = theme.fg("muted", details.thinking.replaceAll("\n", " ").slice(0, 200));
+				text.setText(`${contentText}\n${thinkingLabel}${thinkingText}`);
+			} else {
+				text.setText(contentText);
+			}
+			return text;
+		},
 		async execute(_toolCallId, args, signal, _onUpdate, ctx) {
 			const impression = impressions.get(args.id);
 			if (!impression) {
@@ -260,11 +310,28 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (passthroughRemaining > 0) {
-				passthroughRemaining--;
-				persistPassthroughRemaining();
-				ctx.ui.notify(`[impression] Passthrough mode (${passthroughRemaining} remaining)`, "info");
-				updateRecallShowData(ctx, impression, "passthrough", 0);
-				return createPassthroughToolResult(impression.fullContent);
+				const maxChars = Math.max(cfg.minLength * 10, 10240);
+				const contentChars = impression.fullText.length;
+				const overEstimate = lastEstimatedChars > 0 && contentChars > lastEstimatedChars * 1.5;
+				const overMax = contentChars > maxChars;
+				if (overEstimate || overMax) {
+					passthroughRemaining--;
+					persistPassthroughRemaining();
+					const reason = overMax
+						? `content ${contentChars} chars exceeds hard limit of ${maxChars}`
+						: `content ${contentChars} chars exceeds 1.5x estimated ${lastEstimatedChars}`;
+					ctx.ui.notify(`[impression] Recall passthrough rejected: ${reason}.`, "warning");
+					return {
+						content: [{ type: "text", text: `Recall passthrough rejected: content too large (${reason}). Options: (1) skip_impression count=0 to cancel and recall for distilled notes, (2) save_impression to a file and use read/bash to inspect.` }],
+						details: undefined,
+					};
+				} else {
+					passthroughRemaining--;
+					persistPassthroughRemaining();
+					ctx.ui.notify(`[impression] Passthrough mode (${passthroughRemaining} remaining)`, "info");
+					updateRecallShowData(ctx, impression, "passthrough", 0);
+					return createPassthroughToolResult(impression.fullContent);
+				}
 			}
 
 			if (impression.recallCount >= cfg.maxRecall) {
@@ -272,12 +339,9 @@ export default function (pi: ExtensionAPI) {
 				return createPassthroughToolResult(impression.fullContent);
 			}
 
-			const activeModel = ctx.model;
-			const model = resolveStoredModel(impression, activeModel);
+			const model = ctx.model;
 			if (!model) {
-				notifyImpressionSkip(ctx, `model changed or unavailable (stored ${impression.modelProvider}/${impression.modelId})`);
-				impression.recallCount = cfg.maxRecall;
-				pi.appendEntry("impression-v1", impression);
+				notifyImpressionSkip(ctx, "no active model selected");
 				updateRecallShowData(ctx, impression, "passthrough", 0);
 				return createPassthroughToolResult(impression.fullContent);
 			}
@@ -331,7 +395,7 @@ export default function (pi: ExtensionAPI) {
 
 			pi.appendEntry("impression-v1", impression);
 			updateRecallShowData(ctx, impression, "distill", distillation.note.length);
-			return createRecallToolResult(impression.id, distillation.note);
+			return createRecallToolResult(impression.id, distillation.note, { thinking: distillation.thinking });
 		},
 	});
 
@@ -339,15 +403,90 @@ export default function (pi: ExtensionAPI) {
 		name: "skip_impression",
 		label: "Skip Impression",
 		description:
-			"Skip distillation for the next N tool results (max " + cfg.maxPassthroughCount + "). Use ONLY when you MUST have the exact original content (e.g., for `edit`, keep it for future line-by-line comparison). DO NOT use when just want to understand the codes. You MUST justify your use before calling.",
-		promptSnippet: "skip_impression: Skip distillation for the next N tool results (max " + cfg.maxPassthroughCount + "). Call with { count: N } before reads that EXPLICITLY REQUIRE exact original content (e.g., for `edit` or line-by-line for future comparison). DO NOT use when just want to understand the codes. You MUST justify your use before calling.",
+			"Skip distillation for the next N tool results (max " + cfg.maxPassthroughCount + "). Each call overwrites previous skip state. count=0 cancels passthrough. When count > 0: requires `justification` and `estimatedChars` (hard limit: " + Math.max(cfg.minLength * 10, 10240) + "). Actual content exceeding limit or 1.5x estimate is rejected.",
+		promptSnippet: "skip_impression: Skip distillation for next N results (max " + cfg.maxPassthroughCount + "). Each call overwrites previous state. count=0 cancels. When count > 0: { count, justification, estimatedChars } all required. justification: why exact whitespace matters. estimatedChars hard limit: " + Math.max(cfg.minLength * 10, 10240) + ". Actual content over limit or 1.5x estimate is rejected and stored — use save_impression to inspect. NEVER to \"understand\" or \"analyze\" code.",
 		parameters: SkipImpressionParams,
+		renderCall(args, theme) {
+			const title = theme.fg("toolTitle", theme.bold("Skip Impression"));
+			const count = args.count ?? 1;
+			if (count === 0) return new Text(`${title} ${theme.fg("warning", "cancel")}`, 0, 0);
+			const justification = args.justification
+				? theme.fg("muted", ` "${args.justification.length > 80 ? args.justification.slice(0, 77) + "..." : args.justification}"`)
+				: "";
+			const estimate = args.estimatedChars != null ? theme.fg("accent", ` ~${args.estimatedChars} chars`) : "";
+			return new Text(`${title} count=${count}${estimate}${justification}`, 0, 0);
+		},
 		async execute(_toolCallId, args, _signal, _onUpdate, _ctx) {
 			const requested = args.count ?? 1;
-			passthroughRemaining = Math.min(Math.max(requested, 1), cfg.maxPassthroughCount);
+			if (requested === 0) {
+				passthroughRemaining = 0;
+				lastEstimatedChars = 0;
+				persistPassthroughRemaining();
+				return {
+					content: [{ type: "text", text: "Passthrough cancelled." }],
+					details: undefined,
+				};
+			}
+			if (!args.justification) {
+				return {
+					content: [{ type: "text", text: "Rejected: justification is required when count > 0." }],
+					details: undefined,
+				};
+			}
+			if (args.estimatedChars == null) {
+				return {
+					content: [{ type: "text", text: "Rejected: estimatedChars is required when count > 0." }],
+					details: undefined,
+				};
+			}
+			const maxChars = Math.max(cfg.minLength * 10, 10240);
+			if (args.estimatedChars > maxChars) {
+				return {
+					content: [{ type: "text", text: `Rejected: estimatedChars ${args.estimatedChars} exceeds hard limit of ${maxChars}. Options: (1) skip_impression again with a smaller range and estimatedChars, (2) do not skip and rely on distilled notes.` }],
+					details: undefined,
+				};
+			}
+			passthroughRemaining = Math.min(requested, cfg.maxPassthroughCount);
+			lastEstimatedChars = args.estimatedChars;
 			persistPassthroughRemaining();
 			return {
 				content: [{ type: "text", text: `Skipping distillation for next ${passthroughRemaining} tool result(s).` }],
+				details: undefined,
+			};
+		},
+	});
+
+	const SaveImpressionParams = Type.Object({
+		id: Type.String({ description: "Impression ID to save." }),
+		path: Type.String({ description: "File path to write the original content to." }),
+	});
+
+	pi.registerTool({
+		name: "save_impression",
+		label: "Save Impression",
+		description: "Save the original content of an impression to a file for inspection with read/bash/python. Useful for long non-file content (e.g., command output) or file content that may have changed or been deleted since.",
+		parameters: SaveImpressionParams,
+		async execute(_toolCallId, args, _signal, _onUpdate, ctx) {
+			const impression = impressions.get(args.id);
+			if (!impression) {
+				throw new Error(`Impression not found: ${args.id}`);
+			}
+			if (impression.toolName === "read" && impression.toolInput) {
+				const originalPath = (impression.toolInput.file_path ?? impression.toolInput.path) as string | undefined;
+				if (originalPath && existsSync(originalPath)) {
+					try {
+						const currentContent = readFileSync(originalPath, "utf-8");
+						if (currentContent === impression.fullText || impression.fullText.startsWith(currentContent) || currentContent.includes(impression.fullText)) {
+							ctx.ui.notify(`[impression] Warning: file ${originalPath} still exists and appears unmodified. Consider reading it directly instead.`, "warning");
+						}
+					} catch {
+						// file unreadable, proceed with save
+					}
+				}
+			}
+			writeFileSync(args.path, impression.fullText, "utf-8");
+			return {
+				content: [{ type: "text", text: `Saved ${impression.fullText.length} chars to ${args.path}. Use read/bash to inspect.` }],
 				details: undefined,
 			};
 		},
