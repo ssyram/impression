@@ -6,7 +6,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { buildSessionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
@@ -46,6 +46,50 @@ function formatImpressionData(impressionChars: number, originalChars: number): s
 	return `[impression:data] ${formatCompactChars(impressionChars)} / ${formatCompactChars(originalChars)} = ${ratio.toFixed(2)}%`;
 }
 
+const STATUS_KEY = "impression-data";
+const DOCKER_UPDATE = "docker:update";
+const DOCKER_REMOVE = "docker:remove";
+const DOCKER_AVAILABLE_FLAG = "$__docker_available__";
+const DOCKER_SECTION_TITLE = "Impression";
+const DOCKER_SECTION_ORDER = 30;
+
+interface DockerSection {
+	id: string;
+	title: string;
+	order: number;
+	lines: string[];
+}
+
+interface DockerRemove {
+	id: string;
+}
+
+function hasDocker(): boolean {
+	return (globalThis as Record<string, unknown>)[DOCKER_AVAILABLE_FLAG] === true;
+}
+
+function publishDataStatus(pi: ExtensionAPI, ctx: ExtensionContext, text: string | undefined): void {
+	if (hasDocker()) {
+		if (text) {
+			const section: DockerSection = {
+				id: STATUS_KEY,
+				title: DOCKER_SECTION_TITLE,
+				order: DOCKER_SECTION_ORDER,
+				lines: text.split("\n"),
+			};
+			pi.events.emit(DOCKER_UPDATE, section);
+		} else {
+			const removal: DockerRemove = { id: STATUS_KEY };
+			pi.events.emit(DOCKER_REMOVE, removal);
+		}
+		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+		return;
+	}
+
+	if (!ctx.hasUI) return;
+	ctx.ui.setStatus(STATUS_KEY, text);
+}
+
 export default function (pi: ExtensionAPI) {
 	const impressions = new Map<string, ImpressionEntry>();
 	let cfg: ResolvedConfig = resolveConfig(loadConfig());
@@ -71,16 +115,13 @@ export default function (pi: ExtensionAPI) {
 		persistSessionStats();
 	}
 
-	function updateShowDataStatus(ctx: { ui: { setStatus(key: string, text: string | undefined): void } }) {
-		if (!cfg.showData) {
-			ctx.ui.setStatus("impression-data", undefined);
-			return;
-		}
-		ctx.ui.setStatus("impression-data", formatImpressionData(cumulativeImpressionChars, cumulativeOriginalChars));
+	function updateShowDataStatus(ctx: ExtensionContext) {
+		const text = cfg.showData ? formatImpressionData(cumulativeImpressionChars, cumulativeOriginalChars) : undefined;
+		publishDataStatus(pi, ctx, text);
 	}
 
 	function updateRecallShowData(
-		ctx: { ui: { notify(message: string, type?: "info" | "warning" | "error"): void; setStatus(key: string, text: string | undefined): void } },
+		ctx: ExtensionContext,
 		impression: ImpressionEntry,
 		mode: "passthrough" | "distill",
 		noteChars: number,

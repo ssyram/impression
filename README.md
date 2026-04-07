@@ -2,6 +2,8 @@
 
 Nobody memorizes a full handbook before doing real work; we skim, keep an impression, and move. LLMs should do the same: leave an impression and work without carrying wasteful details. Impression is a plug-and-play extension for [pi](https://github.com/badlogic/pi-mono) that automatically compresses long tool results into compact "impressions" using the active LLM, while storing originals for on-demand recall.
 
+> Tip: if you also load the `docker` plugin, Impression can present cumulative `[impression:data]` stats more clearly in the docker sidebar. Without docker, it falls back to the normal footer status.
+
 ## The Problem
 
 In long coding sessions, tool results (file reads, command outputs, search results) accumulate rapidly in the conversation context. Most content is read once, understood, and never referenced again — but it stays in the context window, consuming tokens and degrading model attention. In a typical session that reads 20+ files, the impression system reduces context usage by 40–70%.
@@ -127,6 +129,7 @@ When `debug:distill-mode` is set (and `debug: true`), Impression always uses tha
 - **Notifications** for skipped results (too short, in skip list, errors).
 - **Tool results** are replaced with the `🧠 [MY INTERNAL MEMORY | ID: ...]` format.
 - A **`recall_impression` tool** appears in the agent's tool list.
+- If the **`docker` plugin** is loaded, cumulative **`[impression:data]`** stats are shown there; otherwise they remain in the footer.
 
 ### Signs It's Working Well
 
