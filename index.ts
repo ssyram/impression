@@ -263,8 +263,8 @@ export default function (pi: ExtensionAPI) {
 
 		const ptLevel = cfg.debug ? "warning" : "info";
 		if (distillation.passthrough) {
-			if (distillation.thinking) {
-				ctx.ui.notify(`[impression] Passthrough thinking: ${distillation.thinking}`, ptLevel);
+			if (cfg.debug && distillation.thinking) {
+				ctx.ui.notify(`[impression] Passthrough thinking: ${distillation.thinking}`, "warning");
 			}
 			recordImpressionData(fullText.length, fullText.length);
 			if (cfg.showData) {
@@ -275,7 +275,7 @@ export default function (pi: ExtensionAPI) {
 			return { content: event.content };
 		}
 
-		if (distillation.thinking) {
+		if (cfg.debug && distillation.thinking) {
 			ctx.ui.notify(`[impression] Thinking detected (${distillation.thinking.length} chars): ${distillation.thinking.slice(0, 300)}`, "warning");
 		}
 
