@@ -10,14 +10,14 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { buildSessionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { loadConfig, resolveConfig, shouldSkipDistillation } from "./src/config.js";
+import { loadConfig, resolveConfig, saveLocalConfig, shouldSkipDistillation } from "./src/config.js";
 import { distillWithSameModel } from "./src/distill.js";
 import { formatOriginalCall } from "./src/format-call.js";
 import { getImpressionSystemAppendTemplate } from "./src/prompt-loader.js";
 import { buildImpressionText, createPassthroughToolResult, createRecallToolResult, notifyImpressionSkip } from "./src/result-builders.js";
 import { serializeContent } from "./src/serialize.js";
 import { CONFIG_FILE_NAME, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getPassthroughModeData, getSessionStatsData, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry } from "./src/types.js";
-import type { ImpressionDetails, ImpressionEntry, ResolvedConfig } from "./src/types.js";
+import type { ImpressionConfig, ImpressionDetails, ImpressionEntry, ResolvedConfig } from "./src/types.js";
 
 const RecallImpressionParams = Type.Object({
 	id: Type.String({ description: "Impression ID" }),
@@ -90,6 +90,33 @@ function publishDataStatus(pi: ExtensionAPI, ctx: ExtensionContext, text: string
 	ctx.ui.setStatus(STATUS_KEY, text);
 }
 
+function parseToolNameList(input: string): string[] {
+	const names: string[] = [];
+	let i = 0;
+	while (i < input.length) {
+		while (i < input.length && (input[i] === " " || input[i] === ",")) i++;
+		if (i >= input.length) break;
+		const ch = input[i];
+		if (ch === '"' || ch === "'" || ch === "`") {
+			const close = input.indexOf(ch, i + 1);
+			if (close === -1) {
+				names.push(input.slice(i + 1).trim());
+				break;
+			}
+			const name = input.slice(i + 1, close).trim();
+			if (name) names.push(name);
+			i = close + 1;
+		} else {
+			let end = i;
+			while (end < input.length && input[end] !== ",") end++;
+			const name = input.slice(i, end).trim();
+			if (name) names.push(name);
+			i = end + 1;
+		}
+	}
+	return names;
+}
+
 export default function (pi: ExtensionAPI) {
 	const impressions = new Map<string, ImpressionEntry>();
 	let cfg: ResolvedConfig = resolveConfig(loadConfig());
@@ -113,6 +140,12 @@ export default function (pi: ExtensionAPI) {
 		cumulativeOriginalChars += originalChars;
 		cumulativeImpressionChars += impressionChars;
 		persistSessionStats();
+	}
+
+	function computeMaxTokens(originalLength: number): number {
+		const base = Math.max(Math.ceil(cfg.minLength / 2), 1024);
+		const rateBased = Math.floor(originalLength * cfg.distillRateFloor);
+		return Math.max(base, rateBased);
 	}
 
 	function updateShowDataStatus(ctx: ExtensionContext) {
@@ -173,6 +206,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_result", async (event, ctx) => {
 		if (event.toolName === "recall_impression" || event.toolName === "skip_impression") return;
+		if (!cfg.enabled) return;
 		if (passthroughRemaining > 0) {
 			const fullText = serializeContent(event.content);
 			const maxChars = Math.max(cfg.minLength * 10, 10240);
@@ -253,7 +287,7 @@ export default function (pi: ExtensionAPI) {
 				event.content,
 				visibleHistory,
 				originalSystemPrompt,
-				Math.max(Math.ceil(cfg.minLength / 2), 1024),
+				computeMaxTokens(fullText.length),
 				ctx.signal,
 				cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
 			);
@@ -408,7 +442,7 @@ export default function (pi: ExtensionAPI) {
 					impression.fullContent,
 					visibleHistory,
 					originalSystemPrompt,
-					Math.max(Math.ceil(cfg.minLength / 2), 1024),
+					computeMaxTokens(impression.fullText.length),
 					signal,
 					cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
 				);
@@ -530,6 +564,42 @@ export default function (pi: ExtensionAPI) {
 				content: [{ type: "text", text: `Saved ${impression.fullText.length} chars to ${args.path}. Use read/bash to inspect.` }],
 				details: undefined,
 			};
+		},
+	});
+
+	pi.registerCommand("impression", {
+		description: "Control impression distillation: on | off | tool1,tool2,... (add tools to skipDistillation)",
+		async handler(args, ctx) {
+			const trimmed = args.trim();
+			if (!trimmed) {
+				const status = cfg.enabled ? "on" : "off";
+				const skip = cfg.skipDistillation.length > 0 ? `\nSkip list: ${cfg.skipDistillation.join(", ")}` : "";
+				ctx.ui.notify(`[impression] Status: ${status}${skip}`, "info");
+				return;
+			}
+			if (trimmed === "on") {
+				cfg.enabled = true;
+				saveLocalConfig({ enabled: true });
+				ctx.ui.notify("[impression] Enabled.", "info");
+				return;
+			}
+			if (trimmed === "off") {
+				cfg.enabled = false;
+				saveLocalConfig({ enabled: false });
+				ctx.ui.notify("[impression] Disabled — all tool results pass through without distillation.", "info");
+				return;
+			}
+			const names = parseToolNameList(trimmed);
+			if (names.length === 0) {
+				ctx.ui.notify(`[impression] Could not parse tool names from: ${trimmed}`, "error");
+				return;
+			}
+			const existing = new Set(cfg.skipDistillation);
+			for (const name of names) existing.add(name);
+			const merged = [...existing];
+			cfg.skipDistillation = merged;
+			saveLocalConfig({ skipDistillation: merged });
+			ctx.ui.notify(`[impression] Skip list updated: ${merged.join(", ")}`, "info");
 		},
 	});
 }

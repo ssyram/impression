@@ -7,6 +7,7 @@ export const SESSION_STATS_ENTRY_TYPE = "impression-session-stats";
 export const DEFAULT_MIN_LENGTH = 2048;
 export const DEFAULT_MAX_RECALL = 1;
 export const DEFAULT_MAX_PASSTHROUGH_COUNT = 2;
+export const DEFAULT_DISTILL_RATE_FLOOR = 0.02;
 export const DISTILLER_SENTINEL = "<passthrough/>";
 export const CONFIG_FILE_NAME = "impression.json";
 
@@ -20,6 +21,8 @@ export interface ImpressionConfig {
 	maxPassthroughCount?: number;
 	showData?: boolean;
 	debug?: boolean;
+	distillRateFloor?: number;
+	enabled?: boolean;
 }
 
 export interface ResolvedConfig {
@@ -30,6 +33,8 @@ export interface ResolvedConfig {
 	maxPassthroughCount: number;
 	showData: boolean;
 	debug: boolean;
+	distillRateFloor: number;
+	enabled: boolean;
 }
 
 export interface ImpressionEntry {

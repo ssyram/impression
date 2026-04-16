@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
-import { CONFIG_FILE_NAME, DEFAULT_MAX_PASSTHROUGH_COUNT, DEFAULT_MAX_RECALL, DEFAULT_MIN_LENGTH } from "./types.js";
+import { CONFIG_FILE_NAME, DEFAULT_DISTILL_RATE_FLOOR, DEFAULT_MAX_PASSTHROUGH_COUNT, DEFAULT_MAX_RECALL, DEFAULT_MIN_LENGTH } from "./types.js";
 import type { ImpressionConfig, ResolvedConfig } from "./types.js";
 
 export function resolveConfig(raw: ImpressionConfig): ResolvedConfig {
@@ -13,6 +13,8 @@ export function resolveConfig(raw: ImpressionConfig): ResolvedConfig {
 		maxPassthroughCount: raw.maxPassthroughCount ?? DEFAULT_MAX_PASSTHROUGH_COUNT,
 		showData: raw.showData ?? false,
 		debug: raw.debug ?? false,
+		distillRateFloor: raw.distillRateFloor ?? DEFAULT_DISTILL_RATE_FLOOR,
+		enabled: raw.enabled ?? true,
 	};
 }
 
@@ -33,6 +35,15 @@ export function loadConfig(): ImpressionConfig {
 	const globalConfig = loadJsonConfig(join(getAgentDir(), CONFIG_FILE_NAME));
 	const localConfig = loadJsonConfig(join(process.cwd(), ".pi", CONFIG_FILE_NAME));
 	return { ...globalConfig, ...localConfig };
+}
+
+export function saveLocalConfig(patch: Partial<ImpressionConfig>): void {
+	const dir = join(process.cwd(), ".pi");
+	const path = join(dir, CONFIG_FILE_NAME);
+	const existing = loadJsonConfig(path) ?? {};
+	const merged = { ...existing, ...patch };
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(path, JSON.stringify(merged, null, "\t") + "\n", "utf-8");
 }
 
 export function shouldSkipDistillation(toolName: string, config: ResolvedConfig): boolean {
