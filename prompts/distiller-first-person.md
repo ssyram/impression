@@ -58,6 +58,11 @@ Also contains: [ONE LINE of omitted material, or "nothing significant omitted"]
 
 PASSTHROUGH
 
-Allowed ONLY when your outer self needs EXACT wording across MOST of the text such that listing the precise position involves over 80% of the original content.
+Use passthrough when your outer self needs this result as raw source text:
+- prompts, skills, rules, or similar text whose direct wording will be followed across most of the content
+- file or text comparison where this side must remain verbatim
+- multi-step or intricate raw-text comparison
+
+Use structured compression when one original text is already available and this result only needs a simple comparison or short diff.
 
 Format: After MANDATORY thinking for justification, JUST {{sentinel}}, NO Markdown, NO formatting.
