@@ -85,41 +85,99 @@ impression/
 │   ├── distill.ts            # Distillation logic (calls LLM)
 │   ├── format-call.ts        # UI: formats tool call display for recall
 │   └── result-builders.ts    # Builds impression/passthrough tool results
-├── prompts/
-│   ├── distiller-system.txt  # System prompt for the distiller model
-│   ├── distiller-user.txt    # User prompt template (history + tool result)
-│   └── impression-text.txt   # Template shown to the agent after distillation
+├── prompts/                                # All prompts are .md
+│   ├── distiller-first-person.md           # Distiller system prompt — first-person variant
+│   ├── distiller-third-person.md           # Distiller system prompt — third-person variant
+│   ├── distiller-user-first-person.md      # Distiller user prompt template — first-person
+│   ├── distiller-user-third-person.md      # Distiller user prompt template — third-person
+│   ├── impression-system-append.md         # Appended to the agent's system prompt at session start
+│   └── impression-text.md                  # Template shown to the agent after distillation
 ├── setup.py                  # Cross-platform installer
 └── README.md
 ```
 
 ## Configuration
 
+Configuration is **session-scoped**. The disk file `.pi/impression.json` is read **once per session start** and seeds the session's effective config. Mid-session changes via `/impression` commands persist to the session JSONL log only — they do **not** rewrite `.pi/impression.json`. The config entries are stored as custom log entries (`customType: "impression-config-v1"`) and are never shown to the LLM.
+
+Effective runtime config = `loadConfig()` from disk → overlaid by all `impression-config-v1` patches in the session log → defaults filled for any unset field.
+
 Create `.pi/impression.json` in your project root (optional — all fields have defaults):
 
 ```json
 {
-  "debug": true,
+  "enabled": true,
+  "debug": false,
   "debug:distill-mode": "third-person",
   "skipDistillation": [],
   "minLength": 2048,
   "maxRecallBeforePassthrough": 1,
+  "maxPassthroughCount": 2,
+  "distillRateFloor": 0.02,
   "showData": false
 }
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `enabled` | `boolean` | `true` | Master switch. When `false`, all tool results pass through without distillation. |
 | `debug` | `boolean` | `false` | Enables debug notifications and debug-only options. |
 | `debug:distill-mode` | `"first-person" \| "third-person"` | unset | Debug override for distiller prompt mode. Works only when `debug: true`; otherwise it is ignored with a warning. |
-| `skipDistillation` | `string[]` | `[]` | Tool names to never distill. Exact match (`"bash"`) or glob prefix (`"background_*"`). |
+| `skipDistillation` | `string[]` | `[]` | Tool names to never distill. Each pattern is matched as: (1) exact match (`"bash"`); (2) glob — only **trailing** `*` is supported (`"background_*"` matches anything starting with `background_`); (3) regex — wrap the pattern in `/.../` (e.g. `"/^read.*_file$/"` for full regex semantics). |
 | `minLength` | `number` | `2048` | Minimum text length (chars) to trigger distillation. |
-| `maxRecallBeforePassthrough` | `number` | `1` | Recalls returning re-distilled notes before switching to full passthrough. |
+| `maxRecallBeforePassthrough` | `number` | `1` | Recalls returning re-distilled notes before switching to full passthrough. **`0` means every recall delivers the full content immediately** — useful when you want the agent to always get exact text after the initial distillation. |
+| `maxPassthroughCount` | `number` | `2` | Hard cap on `skip_impression count=N`. |
+| `distillRateFloor` | `number` | `0.02` | Per-input-char allowance for the distill output budget. The effective `max_tokens` passed to the distiller is `clamp(originalLength * distillRateFloor, 1024, model.maxTokens \|\| 8192)`. Bigger inputs get proportionally more headroom (so the digest can be substantial), but the digest is always capped by the model's per-call output ceiling (or `8192` fallback). The model's prompt-driven length instructions, not this number, are what keep the digest concise — this is just a safety ceiling. Lower bound on this field: `0`. |
 | `showData` | `boolean` | `false` | Shows per-distillation char data as `[impression:data] XXX / YYY = ZZ%`, where the display uses compact `k`/`M` formatting with two decimals, while the ratio is calculated from exact underlying character counts and the footer keeps a cumulative `impression / original` status. |
 
-Config is reloaded on every session start — edit it without restarting pi.
+> **Out-of-range numeric values are clamped with a warning.** Numeric fields have lower bounds: `minLength ≥ 1`, `maxRecallBeforePassthrough ≥ 0`, `maxPassthroughCount ≥ 0`, `distillRateFloor ≥ 0`. A value below the bound (whether from the file, a session log replay, or `/impression set`) is clamped to the bound and the user is notified via `ctx.ui.notify` warning. JSON parse errors in `.pi/impression.json` are also surfaced as warnings at session start (the file is then ignored).
+
+> **Cost note.** Each distillation invokes the same provider/model the agent itself uses, with the agent's system prompt + visible message history + the tool result as input. Recall re-distillation does the same. On long sessions with many large tool results, this roughly doubles the token cost (every long tool result triggers one extra round trip).
+>
+> The distill request's `max_tokens` budget is `clamp(originalLength * distillRateFloor, 1024, model.maxTokens || 8192)`. The model's per-call output ceiling caps the upper end (8192 fallback if the model doesn't declare it). The per-char allowance scales the budget with input size. A 1024 floor ensures the model has room even on tiny inputs. The model's prompt instructions are what actually keep the digest concise; the formula is just a safety ceiling.
+>
+> **Unit caveat:** `originalLength * distillRateFloor` mixes chars and tokens (left side is chars, the result is used as a token budget). For English text `1 token ≈ 4 chars`, so the default `distillRateFloor=0.02` corresponds to roughly an 8% output-to-input token ratio. The mismatch only meaningfully affects budgets in the ~50K–400K char input range; outside that range either the floor or the cap dominates.
+>
+> **Three defense lines** prevent the digest from causing harm:
+> 1. **Truncation guard** (`src/distill.ts`): if the LLM API returns `stopReason === "length"`, the plugin auto-falls back to passthrough rather than handing the agent a torn note. Protects against under-sized `max_tokens`.
+> 2. **Length blowup guard** (`src/distill.ts`): if `strippedText.length >= contentText.length`, the plugin auto-falls back to passthrough. Protects against the digest being longer than the original (which would defeat the whole point).
+> 3. **Budget formula**: the `clamp` above bounds `max_tokens` between 1024 and the model's per-call output ceiling.
+
+> Editing `.pi/impression.json` while a session is running has **no immediate effect** — the file is only re-read by future sessions. To pull the on-disk file into the running session, run `/impression load`.
 
 When `debug:distill-mode` is set (and `debug: true`), Impression always uses that prompt variant and does not switch based on the active model. When unset, it keeps model-based routing.
+
+### `/impression` commands
+
+All subcommands and the `--persistent` flag are case-insensitive.
+
+| Command | Effect |
+|---|---|
+| `/impression` *(or)* `/impression config` / `print` / `read` | Print the current session's effective resolved config (JSON). |
+| `/impression help` / `-h` / `--help` / `?` | Show command help. |
+| `/impression on` | Shorthand for `set Enabled true`. |
+| `/impression off` | Shorthand for `set Enabled false`. |
+| `/impression load` | Re-read `.pi/impression.json` and overlay it into the running session. |
+| `/impression set [--persistent] NAME VALUE` | Set one config field. `VALUE` is parsed as JSON; type-checked against the field. With `--persistent`, the patch is also written back to `.pi/impression.json` (in the background; a warning is shown if the write fails). |
+| `/impression tool1,tool2,...` | Shorthand: append the listed tools to `SkipDistillation` for this session. **Requires a comma** (or quoting) — single bare words are treated as unknown subcommands. |
+
+**Field naming**: `NAME` is matched case- and separator-insensitively. After lowercasing and stripping all non-alphanumerics, the input is looked up against both the JSON-file keys and the PascalCase display names. All of `MaxRecall`, `maxRecall`, `max-recall`, `max_recall`, `"max recall"`, `max:recall`, `maxrecall`, and `maxRecallBeforePassthrough` resolve to the same field. Display names (used in notifications and help) are PascalCase: `Enabled`, `Debug`, `ShowData`, `MinLength`, `MaxRecall`, `MaxPassthroughCount`, `SkipDistillation`, `DebugDistillMode`.
+
+**Value typing**: `enabled` / `debug` / `showData` → boolean; length / rate fields → finite number; `skipDistillation` → JSON array of strings (e.g. `["read","write"]`); `debug:distill-mode` → `"first-person"` or `"third-person"`. Mismatched values are rejected with an explanation.
+
+> An unknown subcommand prints a warning that includes the command help, so a typo is never silently accepted.
+
+> `/impression load` captures the file's contents as a session patch at the moment of invocation. Editing `.pi/impression.json` afterwards has no effect on the running session — re-run `/impression load` to refresh.
+
+### Agent-facing tools
+
+The plugin registers three tools for the LLM:
+
+| Tool | Use |
+|---|---|
+| `recall_impression` | Re-fetch a stored impression by id. Returns either re-distilled notes (if `recallCount < maxRecall`) or the full original content (passthrough). After the full content is delivered once, the impression is marked `delivered` and its content is dropped from internal state — subsequent recalls of the same id error out, since the content is already in the LLM's message history. |
+| `skip_impression` | Tell the plugin to pass through the next N tool results unchanged (max `maxPassthroughCount`). Requires `count`, `justification`, and `estimatedChars`; if the actual content exceeds the limits, the passthrough is rejected (the impression is still stored under a new id for `save_impression` recovery). `count=0` cancels passthrough. |
+| `save_impression` | Save the original content of an impression (by id) to `.pi/impression-cache/<id>.txt` for inspection via `read`/`bash`/`python`. The path is fixed — the agent cannot pick a destination, which keeps the file write inside the project and prevents arbitrary-path writes. |
 
 ## What to Expect
 
@@ -146,15 +204,18 @@ When `debug:distill-mode` is set (and `debug: true`), Impression always uses tha
 
 ## Customizing Prompts
 
-All prompts are plain text files in `prompts/`. Edit them directly to tune distillation behavior.
+All prompts are plain Markdown files in `prompts/`. Edit them directly to tune distillation behavior. The distiller has two prompt variants — `first-person` and `third-person` — selected automatically based on the active model (or forced via `debug:distill-mode` when `debug: true`).
 
 **Template variables** (replaced at runtime):
 
-| File | Variables |
-|---|---|
-| `distiller-system.txt` | `{{contentLength}}`, `{{lengthNote}}`, `{{sentinel}}` |
-| `distiller-user.txt` | `{{originalSystemPrompt}}`, `{{visibleHistory}}`, `{{toolName}}`, `{{toolResult}}` |
-| `impression-text.txt` | `{{id}}`, `{{note}}` |
+| File | Loaded by | Variables |
+|---|---|---|
+| `distiller-first-person.md` | `getDistillerSystemPrompt("first-person")` | `{{contentLength}}`, `{{lengthNote}}`, `{{sentinel}}` |
+| `distiller-third-person.md` | `getDistillerSystemPrompt("third-person")` | `{{contentLength}}`, `{{lengthNote}}`, `{{sentinel}}` |
+| `distiller-user-first-person.md` | `getDistillerUserTemplate("first-person")` | `{{originalSystemPrompt}}`, `{{visibleHistory}}`, `{{toolName}}`, `{{toolResult}}` |
+| `distiller-user-third-person.md` | `getDistillerUserTemplate("third-person")` | `{{originalSystemPrompt}}`, `{{visibleHistory}}`, `{{toolName}}`, `{{toolResult}}` |
+| `impression-text.md` | `getImpressionTextTemplate()` | `{{id}}`, `{{note}}` |
+| `impression-system-append.md` | `getImpressionSystemAppendTemplate()` | _(none — appended verbatim to the agent's system prompt at session start)_ |
 
 ## Dependencies
 

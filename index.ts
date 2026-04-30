@@ -5,9 +5,10 @@
  * See README.md for full documentation.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { buildSessionContext } from "@mariozechner/pi-coding-agent";
+import { buildSessionContext, convertToLlm } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { loadConfig, resolveConfig, saveLocalConfig, shouldSkipDistillation } from "./src/config.js";
@@ -16,7 +17,7 @@ import { formatOriginalCall } from "./src/format-call.js";
 import { getImpressionSystemAppendTemplate } from "./src/prompt-loader.js";
 import { buildImpressionText, createPassthroughToolResult, createRecallToolResult, notifyImpressionSkip } from "./src/result-builders.js";
 import { serializeContent } from "./src/serialize.js";
-import { CONFIG_FILE_NAME, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getPassthroughModeData, getSessionStatsData, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry } from "./src/types.js";
+import { CONFIG_FILE_NAME, IMPRESSION_CONFIG_ENTRY_TYPE, IMPRESSION_ENTRY_TYPE, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getImpressionConfigData, getPassthroughModeData, getSessionStatsData, isImpressionConfigPatch, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry } from "./src/types.js";
 import type { ImpressionConfig, ImpressionDetails, ImpressionEntry, ResolvedConfig } from "./src/types.js";
 
 const RecallImpressionParams = Type.Object({
@@ -24,7 +25,15 @@ const RecallImpressionParams = Type.Object({
 });
 
 function serializeVisibleHistory(messages: ReturnType<typeof buildSessionContext>["messages"]): string {
-	return messages.map((m) => JSON.stringify(m)).join("\n");
+	// convertToLlm projects AgentMessage[] into the provider-bound Message[] shape
+	// (drops timestamp/provider/model/usage/stopReason metadata that the LLM never sees).
+	// KNOWN GAP: this still does NOT apply the "context" event mutator chain
+	// (transformContext → runner.emitContext in pi-coding-agent's agent-loop). Today
+	// no known sibling plugin mutates messages via that hook, so the divergence is
+	// theoretical. Tracked upstream at https://github.com/badlogic/pi-mono/issues/3953
+	// — when the upstream exposes `ctx.getLlmContext()` (or `emitContext`), switch to
+	// that for full fidelity.
+	return convertToLlm(messages).map((m) => JSON.stringify(m)).join("\n");
 }
 
 const SkipImpressionParams = Type.Object({
@@ -117,9 +126,141 @@ function parseToolNameList(input: string): string[] {
 	return names;
 }
 
+type ConfigValueKind = "boolean" | "number" | "string-array" | "distill-mode";
+
+interface ConfigKeyDef {
+	key: keyof ImpressionConfig;
+	display: string;
+	type: ConfigValueKind;
+	/** Lower bound for numeric fields. Values below are clamped to this with a warning. Omitted fields have no lower bound. */
+	min?: number;
+}
+
+const CONFIG_KEY_DEFS: ConfigKeyDef[] = [
+	{ key: "enabled", display: "Enabled", type: "boolean" },
+	{ key: "debug", display: "Debug", type: "boolean" },
+	{ key: "showData", display: "ShowData", type: "boolean" },
+	{ key: "minLength", display: "MinLength", type: "number", min: 1 },
+	{ key: "maxRecallBeforePassthrough", display: "MaxRecall", type: "number", min: 0 },
+	{ key: "maxPassthroughCount", display: "MaxPassthroughCount", type: "number", min: 0 },
+	{ key: "distillRateFloor", display: "DistillRateFloor", type: "number", min: 0 },
+	{ key: "skipDistillation", display: "SkipDistillation", type: "string-array" },
+	{ key: "debug:distill-mode", display: "DebugDistillMode", type: "distill-mode" },
+];
+
+function normalizeName(s: string): string {
+	return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+const PASSTHROUGH_OVERAGE_FACTOR = 1.5;
+
+function getPassthroughHardLimit(cfg: ResolvedConfig): number {
+	return Math.max(cfg.minLength * 10, 10240);
+}
+
+const NORMALIZED_KEY_LOOKUP = new Map<string, ConfigKeyDef>();
+for (const def of CONFIG_KEY_DEFS) {
+	NORMALIZED_KEY_LOOKUP.set(normalizeName(def.key), def);
+	NORMALIZED_KEY_LOOKUP.set(normalizeName(def.display), def);
+}
+
+function lookupConfigKey(name: string): ConfigKeyDef | undefined {
+	return NORMALIZED_KEY_LOOKUP.get(normalizeName(name));
+}
+
+function validateConfigValue(def: ConfigKeyDef, value: unknown): string | null {
+	switch (def.type) {
+		case "boolean":
+			return typeof value === "boolean" ? null : `${def.display} must be a boolean (true / false)`;
+		case "number":
+			return typeof value === "number" && Number.isFinite(value) ? null : `${def.display} must be a finite number`;
+		case "string-array":
+			return Array.isArray(value) && value.every((x) => typeof x === "string")
+				? null
+				: `${def.display} must be a JSON array of strings, e.g. ["read","write"]`;
+		case "distill-mode":
+			return value === "first-person" || value === "third-person"
+				? null
+				: `${def.display} must be "first-person" or "third-person"`;
+	}
+}
+
+/**
+ * Fallback used when the active model's `maxTokens` is missing / 0 / NaN
+ * (custom-provider misconfig). 8192 covers all current mainstream LLMs.
+ */
+const DISTILL_MAX_TOKENS_FALLBACK = 8192;
+
+/** Always-on lower bound on the distill output budget (in tokens), so the model has room even on very short inputs. */
+const DISTILL_MIN_TOKENS_FLOOR = 1024;
+
+function modelOutputCap(model: { maxTokens?: number }): number {
+	const v = model.maxTokens;
+	return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : DISTILL_MAX_TOKENS_FALLBACK;
+}
+
+/**
+ * Compute the `max_tokens` budget for a distill call.
+ *
+ *   clamp( originalLength * distillRateFloor,  DISTILL_MIN_TOKENS_FLOOR,  modelOutputCap(model) )
+ *
+ *   - LOWER bound: at least DISTILL_MIN_TOKENS_FLOOR — model needs room even on tiny inputs.
+ *   - INPUT-SCALED: distillRateFloor (default 0.02) is the per-char allowance — bigger
+ *     inputs raise the budget proportionally so the digest can be substantial.
+ *   - UPPER bound: never exceed model.maxTokens (or 8192 fallback) — single API
+ *     calls cannot return more, and we don't want to "let the digest grow forever".
+ *
+ * Note: the per-char ratio is applied directly (one char ≈ one token equivalent
+ * for budget purposes); the model's prompt-driven length instructions, not this
+ * cap, are what actually keep the digest concise — this is just a safety ceiling.
+ */
+function computeDistillMaxTokens(originalLength: number, model: { maxTokens?: number }, cfg: ResolvedConfig): number {
+	const cap = modelOutputCap(model);
+	const scaled = Math.floor(originalLength * cfg.distillRateFloor);
+	const desired = Math.max(DISTILL_MIN_TOKENS_FLOOR, scaled);
+	return Math.min(desired, cap);
+}
+
+/** For numeric fields, clamp to the field's `min` if specified. Returns the (possibly clamped) value plus an optional warning string. Non-numeric fields pass through. */
+function clampNumeric(def: ConfigKeyDef, value: unknown): { value: unknown; warning?: string } {
+	if (def.type !== "number" || def.min === undefined) return { value };
+	if (typeof value !== "number" || !Number.isFinite(value)) return { value };
+	if (value < def.min) {
+		return { value: def.min, warning: `${def.display}=${value} is below the minimum ${def.min}; clamped to ${def.min}.` };
+	}
+	return { value };
+}
+
+const IMPRESSION_HELP = [
+	"/impression — view or change session config.",
+	"  /impression                       Print current session config.",
+	"  /impression config|print|read    Same as above.",
+	"  /impression help|-h|--help|?     Show this help.",
+	"  /impression on                    Shorthand for `set Enabled true`.",
+	"  /impression off                   Shorthand for `set Enabled false`.",
+	"  /impression load                  Re-read .pi/impression.json into the session as a patch.",
+	"  /impression set [--persistent] NAME VALUE",
+	"                                    Set one config field. NAME is case- and separator-insensitive",
+	"                                    (Enabled, enabled, max-recall, max_recall, \"max recall\" all work).",
+	"                                    VALUE is JSON; type-checked against the field.",
+	"                                    --persistent also writes back to .pi/impression.json.",
+	"  /impression tool1,tool2,...       Append tools to SkipDistillation for this session.",
+	"Known fields: " + CONFIG_KEY_DEFS.map((d) => d.display).join(", "),
+].join("\n");
+
+function parseSetBody(body: string): { name: string; value: string } | null {
+	const match = body.match(/^(?:"([^"]*)"|'([^']*)'|(\S+))\s+(.+)$/);
+	if (!match) return null;
+	const name = (match[1] ?? match[2] ?? match[3] ?? "").trim();
+	const value = match[4].trim();
+	if (!name || !value) return null;
+	return { name, value };
+}
+
 export default function (pi: ExtensionAPI) {
 	const impressions = new Map<string, ImpressionEntry>();
-	let cfg: ResolvedConfig = resolveConfig(loadConfig());
+	let currentRaw: ImpressionConfig = {};
+	let cfg: ResolvedConfig = resolveConfig(currentRaw);
 	let cumulativeOriginalChars = 0;
 	let cumulativeImpressionChars = 0;
 	let passthroughRemaining = 0;
@@ -142,11 +283,6 @@ export default function (pi: ExtensionAPI) {
 		persistSessionStats();
 	}
 
-	function computeMaxTokens(originalLength: number): number {
-		const base = Math.max(Math.ceil(cfg.minLength / 2), 1024);
-		const rateBased = Math.floor(originalLength * cfg.distillRateFloor);
-		return Math.max(base, rateBased);
-	}
 
 	function updateShowDataStatus(ctx: ExtensionContext) {
 		const text = cfg.showData ? formatImpressionData(cumulativeImpressionChars, cumulativeOriginalChars) : undefined;
@@ -168,17 +304,63 @@ export default function (pi: ExtensionAPI) {
 		updateShowDataStatus(ctx);
 	}
 
+	function deliverFullContent(impression: ImpressionEntry) {
+		// Capture the result BEFORE mutating: createPassthroughToolResult's `content`
+		// holds a reference to impression.fullContent. Reassigning impression.fullContent
+		// to [] swaps the property — the captured array reference is unaffected.
+		const result = createPassthroughToolResult(impression.fullContent);
+		impression.fullContent = [];
+		impression.fullText = "";
+		impression.delivered = true;
+		pi.appendEntry(IMPRESSION_ENTRY_TYPE, impression);
+		return result;
+	}
+
+	function newImpression(event: { toolName: string; toolCallId: string; input?: Record<string, unknown>; content: ImpressionEntry["fullContent"] }, fullText: string): ImpressionEntry {
+		return {
+			id: randomUUID(),
+			toolName: event.toolName,
+			toolCallId: event.toolCallId,
+			toolInput: event.input,
+			fullContent: event.content,
+			fullText,
+			originalChars: fullText.length,
+			recallCount: 0,
+			createdAt: Date.now(),
+		};
+	}
+
+	function getVisibleHistory(ctx: ExtensionContext): string {
+		return serializeVisibleHistory(buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId()).messages);
+	}
+
+	function applyConfigPatch(patch: Partial<ImpressionConfig>): void {
+		const safe = Array.isArray(patch.skipDistillation)
+			? { ...patch, skipDistillation: [...patch.skipDistillation] }
+			: patch;
+		// disk-first: if appendEntry throws, in-memory cfg/currentRaw remain consistent
+		// with the JSONL log, and the next session_start will replay the same state.
+		pi.appendEntry(IMPRESSION_CONFIG_ENTRY_TYPE, safe);
+		currentRaw = { ...currentRaw, ...safe };
+		cfg = resolveConfig(currentRaw);
+		registerSkipImpressionTool();
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
-		cfg = resolveConfig(loadConfig());
-		if (cfg.debugDistillMode && !cfg.debug) {
-			ctx.ui.notify('[impression] Ignoring "debug:distill-mode" because "debug" is not enabled.', "warning");
-			cfg.debugDistillMode = undefined;
+		const loaded = loadConfig();
+		currentRaw = loaded.config;
+		// Surface parse errors from .pi/impression.json or the global config — file
+		// load is deferred to session_start precisely so we have ctx.ui to notify here
+		// (loading at module init would silently swallow errors).
+		for (const w of loaded.warnings) {
+			ctx.ui.notify(`[impression] ${w}`, "warning");
 		}
 		cumulativeOriginalChars = 0;
 		cumulativeImpressionChars = 0;
 		passthroughRemaining = 0;
+		lastEstimatedChars = 0;
 		impressions.clear();
-		for (const entry of ctx.sessionManager.getEntries()) {
+		for (const entry of ctx.sessionManager.getBranch()) {
 			const ptData = getPassthroughModeData(entry);
 			if (isPassthroughModeEntry(ptData)) {
 				passthroughRemaining = ptData.remaining;
@@ -191,10 +373,50 @@ export default function (pi: ExtensionAPI) {
 				cumulativeImpressionChars = statsData.impressionChars;
 				continue;
 			}
+			const cfgData = getImpressionConfigData(entry);
+			if (isImpressionConfigPatch(cfgData)) {
+				currentRaw = { ...currentRaw, ...cfgData };
+				continue;
+			}
 			const data = getEntryData(entry);
 			if (!isImpressionEntry(data)) continue;
 			impressions.set(data.id, data);
 		}
+		// Validate type compatibility AND clamp out-of-range numerics on the merged
+		// raw before resolving cfg. Hand-edits to .pi/impression.json (e.g. writing
+		// "minLength": "abc") would otherwise propagate a string into ResolvedConfig
+		// and silently break comparisons; here we delete the field and fall back to
+		// the default while surfacing a warning.
+		for (const def of CONFIG_KEY_DEFS) {
+			const v = (currentRaw as Record<string, unknown>)[def.key];
+			if (v === undefined) continue;
+			const typeError = validateConfigValue(def, v);
+			if (typeError) {
+				ctx.ui.notify(
+					`[impression] Config ${def.display}: ${typeError} (got ${JSON.stringify(v)}); ignoring this field — falling back to default.`,
+					"warning",
+				);
+				delete (currentRaw as Record<string, unknown>)[def.key];
+				continue;
+			}
+			if (def.type === "number") {
+				const clamp = clampNumeric(def, v);
+				if (clamp.warning) {
+					ctx.ui.notify(`[impression] ${clamp.warning}`, "warning");
+					(currentRaw as Record<string, unknown>)[def.key] = clamp.value;
+				}
+			}
+		}
+		cfg = resolveConfig(currentRaw);
+		if (cfg.debugDistillMode && !cfg.debug) {
+			// Each session_start re-evaluates the file as source of truth, so if the
+			// file itself has `debug:distill-mode` set without `debug: true`, this
+			// warning will fire once per session — by design.
+			ctx.ui.notify('[impression] Ignoring "debug:distill-mode" because "debug" is not enabled.', "warning");
+			delete currentRaw["debug:distill-mode"];
+			cfg.debugDistillMode = undefined;
+		}
+		registerSkipImpressionTool();
 		updateShowDataStatus(ctx);
 	});
 
@@ -209,32 +431,25 @@ export default function (pi: ExtensionAPI) {
 		if (!cfg.enabled) return;
 		if (passthroughRemaining > 0) {
 			const fullText = serializeContent(event.content);
-			const maxChars = Math.max(cfg.minLength * 10, 10240);
-			const overEstimate = lastEstimatedChars > 0 && fullText.length > lastEstimatedChars * 1.5;
+			const maxChars = getPassthroughHardLimit(cfg);
+			const overEstimate = lastEstimatedChars > 0 && fullText.length > lastEstimatedChars * PASSTHROUGH_OVERAGE_FACTOR;
 			const overMax = fullText.length > maxChars;
 			if (overEstimate || overMax) {
-				passthroughRemaining--;
-				persistPassthroughRemaining();
 				const reason = overMax
 					? `actual content ${fullText.length} chars exceeds hard limit of ${maxChars}`
-					: `actual content ${fullText.length} chars exceeds 1.5x estimated ${lastEstimatedChars}`;
+					: `actual content ${fullText.length} chars exceeds ${PASSTHROUGH_OVERAGE_FACTOR}x estimated ${lastEstimatedChars}`;
+				const impression = newImpression(event, fullText);
+				// disk-first: append impression before consuming a passthrough slot.
+				// If appendEntry throws, the rejection notice would reference an id
+				// with no JSONL backing (and no recovery on resume); decrementing first
+				// would also burn the slot for nothing.
+				impressions.set(impression.id, impression);
+				pi.appendEntry(IMPRESSION_ENTRY_TYPE, impression);
+				passthroughRemaining--;
+				persistPassthroughRemaining();
 				ctx.ui.notify(`[impression] Passthrough rejected: ${reason}.`, "warning");
-				const id = randomUUID();
-				const impression: ImpressionEntry = {
-					id,
-					toolName: event.toolName,
-					toolCallId: event.toolCallId,
-					toolInput: event.input,
-					fullContent: event.content,
-					fullText,
-					originalChars: fullText.length,
-					recallCount: 0,
-					createdAt: Date.now(),
-				};
-				impressions.set(id, impression);
-				pi.appendEntry("impression-v1", impression);
 				return {
-					content: [{ type: "text", text: `Passthrough stored but content too large (${reason}). Impression ID: ${id}. Options: (1) skip_impression again with a smaller range, (2) skip_impression count=0 to cancel and let distillation handle it, (3) save_impression to a file and use read/bash to inspect.` }],
+					content: [{ type: "text", text: `Passthrough stored but content too large (${reason}). Impression ID: ${impression.id}. Options: (1) skip_impression again with a smaller range, (2) skip_impression count=0 to cancel and let distillation handle it, (3) save_impression to a file and use read/bash to inspect.` }],
 				};
 			} else {
 				passthroughRemaining--;
@@ -274,7 +489,7 @@ export default function (pi: ExtensionAPI) {
 			notifyImpressionSkip(ctx, `missing auth for ${model.provider}/${model.id}: ${auth.error}`);
 			return { content: event.content };
 		}
-		const visibleHistory = serializeVisibleHistory(buildSessionContext(ctx.sessionManager.getEntries()).messages);
+		const visibleHistory = getVisibleHistory(ctx);
 		const originalSystemPrompt = ctx.getSystemPrompt();
 		ctx.ui.setStatus("impression-distill", `[impression] Distilling ${fullText.length} chars with ${model.provider}/${model.id}...`);
 		let distillation: { passthrough: boolean; note: string; thinking?: string };
@@ -287,7 +502,7 @@ export default function (pi: ExtensionAPI) {
 				event.content,
 				visibleHistory,
 				originalSystemPrompt,
-				computeMaxTokens(fullText.length),
+				computeDistillMaxTokens(fullText.length, model, cfg),
 				ctx.signal,
 				cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
 			);
@@ -320,24 +535,12 @@ export default function (pi: ExtensionAPI) {
 		}
 		updateShowDataStatus(ctx);
 
-		const id = randomUUID();
-		const originalChars = fullText.length;
-		const impression: ImpressionEntry = {
-			id,
-			toolName: event.toolName,
-			toolCallId: event.toolCallId,
-			toolInput: event.input,
-			fullContent: event.content,
-			fullText,
-			originalChars,
-			recallCount: 0,
-			createdAt: Date.now(),
-		};
-		impressions.set(id, impression);
-		pi.appendEntry("impression-v1", impression);
+		const impression = newImpression(event, fullText);
+		impressions.set(impression.id, impression);
+		pi.appendEntry(IMPRESSION_ENTRY_TYPE, impression);
 
 		return {
-			content: [{ type: "text", text: buildImpressionText(id, distillation.note) }],
+			content: [{ type: "text", text: buildImpressionText(impression.id, distillation.note) }],
 			details: { thinking: distillation.thinking } satisfies ImpressionDetails,
 		};
 	});
@@ -368,10 +571,13 @@ export default function (pi: ExtensionAPI) {
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
 				.map((c) => c.text)
 				.join("\n");
-			const details = result.details as ImpressionDetails | undefined;
-			if (details?.thinking) {
+			const rawDetails = result.details;
+			const thinking = rawDetails && typeof rawDetails === "object" && typeof (rawDetails as Record<string, unknown>).thinking === "string"
+				? ((rawDetails as Record<string, unknown>).thinking as string)
+				: undefined;
+			if (thinking) {
 				const thinkingLabel = theme.fg("muted", "[thinking] ");
-				const thinkingText = theme.fg("muted", details.thinking.replaceAll("\n", " ").slice(0, 200));
+				const thinkingText = theme.fg("muted", thinking.replaceAll("\n", " ").slice(0, 200));
 				text.setText(`${contentText}\n${thinkingLabel}${thinkingText}`);
 			} else {
 				text.setText(contentText);
@@ -383,18 +589,21 @@ export default function (pi: ExtensionAPI) {
 			if (!impression) {
 				throw new Error(`Impression not found: ${args.id}`);
 			}
+			if (impression.delivered) {
+				throw new Error(`Impression ${args.id} has already been fully delivered to your context. The full content is already in your message history; re-recall it from there, or use the standard write tool to persist it.`);
+			}
 
 			if (passthroughRemaining > 0) {
-				const maxChars = Math.max(cfg.minLength * 10, 10240);
+				const maxChars = getPassthroughHardLimit(cfg);
 				const contentChars = impression.fullText.length;
-				const overEstimate = lastEstimatedChars > 0 && contentChars > lastEstimatedChars * 1.5;
+				const overEstimate = lastEstimatedChars > 0 && contentChars > lastEstimatedChars * PASSTHROUGH_OVERAGE_FACTOR;
 				const overMax = contentChars > maxChars;
 				if (overEstimate || overMax) {
 					passthroughRemaining--;
 					persistPassthroughRemaining();
 					const reason = overMax
 						? `content ${contentChars} chars exceeds hard limit of ${maxChars}`
-						: `content ${contentChars} chars exceeds 1.5x estimated ${lastEstimatedChars}`;
+						: `content ${contentChars} chars exceeds ${PASSTHROUGH_OVERAGE_FACTOR}x estimated ${lastEstimatedChars}`;
 					ctx.ui.notify(`[impression] Recall passthrough rejected: ${reason}.`, "warning");
 					return {
 						content: [{ type: "text", text: `Recall passthrough rejected: content too large (${reason}). Options: (1) skip_impression count=0 to cancel and recall for distilled notes, (2) save_impression to a file and use read/bash to inspect.` }],
@@ -405,31 +614,30 @@ export default function (pi: ExtensionAPI) {
 					persistPassthroughRemaining();
 					ctx.ui.notify(`[impression] Passthrough mode (${passthroughRemaining} remaining)`, "info");
 					updateRecallShowData(ctx, impression, "passthrough", 0);
-					return createPassthroughToolResult(impression.fullContent);
+					return deliverFullContent(impression);
 				}
 			}
 
 			if (impression.recallCount >= cfg.maxRecall) {
 				updateRecallShowData(ctx, impression, "passthrough", 0);
-				return createPassthroughToolResult(impression.fullContent);
+				return deliverFullContent(impression);
 			}
 
 			const model = ctx.model;
 			if (!model) {
 				notifyImpressionSkip(ctx, "no active model selected");
 				updateRecallShowData(ctx, impression, "passthrough", 0);
-				return createPassthroughToolResult(impression.fullContent);
+				return deliverFullContent(impression);
 			}
 
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok) {
 				notifyImpressionSkip(ctx, `missing auth for ${model.provider}/${model.id}: ${auth.error}`);
 				impression.recallCount = cfg.maxRecall;
-				pi.appendEntry("impression-v1", impression);
 				updateRecallShowData(ctx, impression, "passthrough", 0);
-				return createPassthroughToolResult(impression.fullContent);
+				return deliverFullContent(impression);
 			}
-			const visibleHistory = serializeVisibleHistory(buildSessionContext(ctx.sessionManager.getEntries()).messages);
+			const visibleHistory = getVisibleHistory(ctx);
 			const originalSystemPrompt = ctx.getSystemPrompt();
 			ctx.ui.setStatus("impression-distill", `[impression] Re-distilling ${impression.fullText.length} chars with ${model.provider}/${model.id}...`);
 			let distillation: { passthrough: boolean; note: string; thinking?: string };
@@ -442,7 +650,7 @@ export default function (pi: ExtensionAPI) {
 					impression.fullContent,
 					visibleHistory,
 					originalSystemPrompt,
-					computeMaxTokens(impression.fullText.length),
+					computeDistillMaxTokens(impression.fullText.length, model, cfg),
 					signal,
 					cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
 				);
@@ -456,30 +664,32 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(`[impression] Recall passthrough thinking: ${distillation.thinking}`, ptLevel);
 				}
 				impression.recallCount = cfg.maxRecall;
-				pi.appendEntry("impression-v1", impression);
 				updateRecallShowData(ctx, impression, "passthrough", distillation.note.length);
-				return createPassthroughToolResult(impression.fullContent);
+				return deliverFullContent(impression);
 			}
 
 			impression.recallCount += 1;
 			if (impression.recallCount >= cfg.maxRecall) {
-				pi.appendEntry("impression-v1", impression);
 				updateRecallShowData(ctx, impression, "passthrough", distillation.note.length);
-				return createPassthroughToolResult(impression.fullContent);
+				return deliverFullContent(impression);
 			}
 
-			pi.appendEntry("impression-v1", impression);
+			pi.appendEntry(IMPRESSION_ENTRY_TYPE, impression);
 			updateRecallShowData(ctx, impression, "distill", distillation.note.length);
 			return createRecallToolResult(impression.id, distillation.note, { thinking: distillation.thinking });
 		},
 	});
 
-	pi.registerTool({
+	// Re-registering by name overwrites the prior entry in extension.tools (loader.ts:204)
+	// and triggers refreshTools(). We rely on this to keep the LLM-visible description
+	// (which embeds cfg.maxPassthroughCount and cfg.minLength*10) in sync with cfg.
+	function registerSkipImpressionTool() {
+		pi.registerTool({
 		name: "skip_impression",
 		label: "Skip Impression",
 		description:
-			"Skip distillation for the next N tool results (max " + cfg.maxPassthroughCount + "). Each call overwrites previous skip state. count=0 cancels passthrough. When count > 0: requires `justification` and `estimatedChars` (hard limit: " + Math.max(cfg.minLength * 10, 10240) + "). Actual content exceeding limit or 1.5x estimate is rejected.",
-		promptSnippet: "skip_impression: Skip distillation for next N results (max " + cfg.maxPassthroughCount + "). Each call overwrites previous state. count=0 cancels. When count > 0: { count, justification, estimatedChars } all required. justification: why exact whitespace matters. estimatedChars hard limit: " + Math.max(cfg.minLength * 10, 10240) + ". Actual content over limit or 1.5x estimate is rejected and stored — use save_impression to inspect. NEVER to \"understand\" or \"analyze\" code.",
+			"Skip distillation for the next N tool results (max " + cfg.maxPassthroughCount + "). Each call overwrites previous skip state. count=0 cancels passthrough. When count > 0: requires `justification` and `estimatedChars` (hard limit: " + getPassthroughHardLimit(cfg) + "). Actual content exceeding limit or " + PASSTHROUGH_OVERAGE_FACTOR + "x estimate is rejected.",
+		promptSnippet: "skip_impression: Skip distillation for next N results (max " + cfg.maxPassthroughCount + "). Each call overwrites previous state. count=0 cancels. When count > 0: { count, justification, estimatedChars } all required. justification: why exact whitespace matters. estimatedChars hard limit: " + getPassthroughHardLimit(cfg) + ". Actual content over limit or " + PASSTHROUGH_OVERAGE_FACTOR + "x estimate is rejected and stored — use save_impression to inspect. NEVER to \"understand\" or \"analyze\" code.",
 		parameters: SkipImpressionParams,
 		renderCall(args, theme) {
 			const title = theme.fg("toolTitle", theme.bold("Skip Impression"));
@@ -514,7 +724,13 @@ export default function (pi: ExtensionAPI) {
 					details: undefined,
 				};
 			}
-			const maxChars = Math.max(cfg.minLength * 10, 10240);
+			if (!Number.isFinite(args.estimatedChars) || args.estimatedChars <= 0) {
+				return {
+					content: [{ type: "text", text: `Rejected: estimatedChars must be a positive finite number. Got ${args.estimatedChars}.` }],
+					details: undefined,
+				};
+			}
+			const maxChars = getPassthroughHardLimit(cfg);
 			if (args.estimatedChars > maxChars) {
 				return {
 					content: [{ type: "text", text: `Rejected: estimatedChars ${args.estimatedChars} exceeds hard limit of ${maxChars}. Options: (1) skip_impression again with a smaller range and estimatedChars, (2) do not skip and rely on distilled notes.` }],
@@ -529,25 +745,30 @@ export default function (pi: ExtensionAPI) {
 				details: undefined,
 			};
 		},
-	});
+		});
+	}
+	registerSkipImpressionTool();
 
 	const SaveImpressionParams = Type.Object({
 		id: Type.String({ description: "Impression ID to save." }),
-		path: Type.String({ description: "File path to write the original content to." }),
 	});
 
 	pi.registerTool({
 		name: "save_impression",
 		label: "Save Impression",
-		description: "Save the original content of an impression to a file for inspection with read/bash/python. Useful for long non-file content (e.g., command output) or file content that may have changed or been deleted since.",
+		description: "Save the original content of an impression to .pi/impression-cache/<id>.txt for inspection with read/bash/python. Useful for long non-file content (e.g., command output) or file content that may have changed or been deleted since.",
 		parameters: SaveImpressionParams,
 		async execute(_toolCallId, args, _signal, _onUpdate, ctx) {
 			const impression = impressions.get(args.id);
 			if (!impression) {
 				throw new Error(`Impression not found: ${args.id}`);
 			}
+			if (impression.delivered) {
+				throw new Error(`Impression ${args.id}'s full content was already delivered to the LLM and discarded from internal state. Save unavailable; the content is in your context — write it via the standard write tool instead.`);
+			}
 			if (impression.toolName === "read" && impression.toolInput) {
-				const originalPath = (impression.toolInput.file_path ?? impression.toolInput.path) as string | undefined;
+				const candidate = impression.toolInput.file_path ?? impression.toolInput.path;
+				const originalPath = typeof candidate === "string" ? candidate : undefined;
 				if (originalPath && existsSync(originalPath)) {
 					try {
 						const currentContent = readFileSync(originalPath, "utf-8");
@@ -559,47 +780,142 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 			}
-			writeFileSync(args.path, impression.fullText, "utf-8");
+			const cacheDir = join(process.cwd(), ".pi", "impression-cache");
+			const outPath = join(cacheDir, `${impression.id}.txt`);
+			mkdirSync(cacheDir, { recursive: true });
+			writeFileSync(outPath, impression.fullText, "utf-8");
 			return {
-				content: [{ type: "text", text: `Saved ${impression.fullText.length} chars to ${args.path}. Use read/bash to inspect.` }],
+				content: [{ type: "text", text: `Saved ${impression.fullText.length} chars to ${outPath}. Use read/bash to inspect.` }],
 				details: undefined,
 			};
 		},
 	});
 
 	pi.registerCommand("impression", {
-		description: "Control impression distillation: on | off | tool1,tool2,... (add tools to skipDistillation)",
+		description: "View or change session config. Try /impression help for full usage.",
 		async handler(args, ctx) {
 			const trimmed = args.trim();
-			if (!trimmed) {
-				const status = cfg.enabled ? "on" : "off";
-				const skip = cfg.skipDistillation.length > 0 ? `\nSkip list: ${cfg.skipDistillation.join(", ")}` : "";
-				ctx.ui.notify(`[impression] Status: ${status}${skip}`, "info");
+			const lower = trimmed.toLowerCase();
+			if (!lower || lower === "config" || lower === "print" || lower === "read") {
+				ctx.ui.notify(`[impression] Session config:\n${JSON.stringify(cfg, null, 2)}`, "info");
 				return;
 			}
-			if (trimmed === "on") {
-				cfg.enabled = true;
-				saveLocalConfig({ enabled: true });
+			if (lower === "help" || lower === "-h" || lower === "--help" || lower === "?") {
+				ctx.ui.notify(IMPRESSION_HELP, "info");
+				return;
+			}
+			if (lower === "on") {
+				applyConfigPatch({ enabled: true });
 				ctx.ui.notify("[impression] Enabled.", "info");
 				return;
 			}
-			if (trimmed === "off") {
-				cfg.enabled = false;
-				saveLocalConfig({ enabled: false });
+			if (lower === "off") {
+				applyConfigPatch({ enabled: false });
 				ctx.ui.notify("[impression] Disabled — all tool results pass through without distillation.", "info");
 				return;
 			}
-			const names = parseToolNameList(trimmed);
-			if (names.length === 0) {
-				ctx.ui.notify(`[impression] Could not parse tool names from: ${trimmed}`, "error");
+			if (lower === "load") {
+				const loaded = loadConfig();
+				for (const w of loaded.warnings) {
+					ctx.ui.notify(`[impression] ${w}`, "warning");
+				}
+				if (Object.keys(loaded.config).length === 0) {
+					ctx.ui.notify(`[impression] ${CONFIG_FILE_NAME} is empty or missing — nothing to load.`, "warning");
+					return;
+				}
+				// Validate type compatibility AND clamp out-of-range numerics on the
+				// file payload before patching. Type-incompatible fields are dropped
+				// from the local clone so applyConfigPatch (and resolveConfig) never
+				// see them.
+				const clamped: Partial<ImpressionConfig> = { ...loaded.config };
+				for (const def of CONFIG_KEY_DEFS) {
+					const v = (clamped as Record<string, unknown>)[def.key];
+					if (v === undefined) continue;
+					const typeError = validateConfigValue(def, v);
+					if (typeError) {
+						ctx.ui.notify(
+							`[impression] Config ${def.display}: ${typeError} (got ${JSON.stringify(v)}); ignoring this field — falling back to default.`,
+							"warning",
+						);
+						delete (clamped as Record<string, unknown>)[def.key];
+						continue;
+					}
+					if (def.type === "number") {
+						const c = clampNumeric(def, v);
+						if (c.warning) {
+							ctx.ui.notify(`[impression] ${c.warning}`, "warning");
+							(clamped as Record<string, unknown>)[def.key] = c.value;
+						}
+					}
+				}
+				applyConfigPatch(clamped);
+				ctx.ui.notify(`[impression] Loaded ${CONFIG_FILE_NAME} into session.`, "info");
 				return;
 			}
-			const existing = new Set(cfg.skipDistillation);
-			for (const name of names) existing.add(name);
-			const merged = [...existing];
-			cfg.skipDistillation = merged;
-			saveLocalConfig({ skipDistillation: merged });
-			ctx.ui.notify(`[impression] Skip list updated: ${merged.join(", ")}`, "info");
+			if (lower === "set" || lower.startsWith("set ")) {
+				let body = trimmed.slice(3).trim();
+				let persistent = false;
+				if (body.toLowerCase() === "--persistent" || body.toLowerCase().startsWith("--persistent ")) {
+					persistent = true;
+					body = body.slice("--persistent".length).trim();
+				}
+				const parsed = parseSetBody(body);
+				if (!parsed) {
+					ctx.ui.notify('[impression] Usage: /impression set [--persistent] NAME VALUE  (VALUE is JSON; e.g. true / 5000 / ["a","b"])', "error");
+					return;
+				}
+				const def = lookupConfigKey(parsed.name);
+				if (!def) {
+					ctx.ui.notify(
+						`[impression] Unknown config field: ${parsed.name}. Known: ${CONFIG_KEY_DEFS.map((d) => d.display).join(", ")}.`,
+						"error",
+					);
+					return;
+				}
+				let value: unknown;
+				try {
+					value = JSON.parse(parsed.value);
+				} catch {
+					value = parsed.value;
+				}
+				const typeError = validateConfigValue(def, value);
+				if (typeError) {
+					ctx.ui.notify(`[impression] ${typeError}. Got ${JSON.stringify(parsed.value)}.`, "error");
+					return;
+				}
+				const clamp = clampNumeric(def, value);
+				if (clamp.warning) {
+					ctx.ui.notify(`[impression] ${clamp.warning}`, "warning");
+				}
+				const patch = { [def.key]: clamp.value } as Partial<ImpressionConfig>;
+				applyConfigPatch(patch);
+				if (persistent) {
+					saveLocalConfig(patch).catch((err) => {
+						if (!ctx.hasUI) return;
+						const msg = err instanceof Error ? err.message : String(err);
+						ctx.ui.notify(`[impression] Failed to persist to .pi/${CONFIG_FILE_NAME}: ${msg}`, "warning");
+					});
+				}
+				ctx.ui.notify(
+					`[impression] Set ${def.display} = ${JSON.stringify(clamp.value)}${persistent ? ` (persisting to .pi/${CONFIG_FILE_NAME} in background)` : ""}.`,
+					"info",
+				);
+				return;
+			}
+			if (trimmed.includes(",") || trimmed.includes('"') || trimmed.includes("'")) {
+				const names = parseToolNameList(trimmed);
+				if (names.length === 0) {
+					ctx.ui.notify(`[impression] Could not parse tool names from: ${trimmed}\n${IMPRESSION_HELP}`, "warning");
+					return;
+				}
+				const existing = new Set(cfg.skipDistillation);
+				for (const name of names) existing.add(name);
+				const merged = [...existing];
+				applyConfigPatch({ skipDistillation: merged });
+				ctx.ui.notify(`[impression] SkipDistillation updated: ${merged.join(", ")}`, "info");
+				return;
+			}
+			ctx.ui.notify(`[impression] Unknown subcommand: ${trimmed}\n${IMPRESSION_HELP}`, "warning");
 		},
 	});
 }

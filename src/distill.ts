@@ -78,6 +78,17 @@ export async function distillWithSameModel(
 		{ apiKey: auth.apiKey, headers: auth.headers, maxTokens, signal },
 	);
 
+	// Truncation guard: if the model hit the max_tokens cap mid-output, the
+	// returned text is partial — its tail may be a half sentence or even split
+	// inside a <thinking> block. Treat this as "could not safely distill" and
+	// fall back to passthrough rather than handing the agent a torn note.
+	if (response.stopReason === "length") {
+		return {
+			passthrough: true,
+			note: `[DISTILLATION TRUNCATED — output hit max_tokens=${maxTokens}; falling back to passthrough]`,
+		};
+	}
+
 	const text = response.content
 		.filter((block): block is TextContent => block.type === "text")
 		.map((block) => block.text)

@@ -18,3 +18,5 @@ Tool: {{toolName}}
 <tool_result>
 {{toolResult}}
 </tool_result>
+
+CONSIDER CAREFULLY the intention, if it matches any of the passthrough rules, YOU MUST PASSTHROUGH, otherwise, YOU MUST NOT PASSTHROUGH. If you are not sure, DO NOT PASSTHROUGH.
