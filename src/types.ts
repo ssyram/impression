@@ -60,6 +60,9 @@ export function isImpressionEntry(value: unknown): value is ImpressionEntry {
 		typeof record.toolName === "string" &&
 		typeof record.toolCallId === "string" &&
 		Array.isArray(record.fullContent) &&
+		(record.fullContent as unknown[]).every((el: unknown) =>
+			!!el && typeof el === "object" && "type" in el && (el.type === "text" || el.type === "image"),
+		) &&
 		typeof record.fullText === "string" &&
 		(record.originalChars === undefined || typeof record.originalChars === "number") &&
 		typeof record.recallCount === "number" &&

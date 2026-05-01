@@ -10,9 +10,9 @@ export function resolveConfig(raw: ImpressionConfig): ResolvedConfig {
 	return {
 		debugDistillMode: raw["debug:distill-mode"],
 		skipDistillation: raw.skipDistillation ?? [],
-		minLength: raw.minLength ?? DEFAULT_MIN_LENGTH,
-		maxRecall: raw.maxRecallBeforePassthrough ?? DEFAULT_MAX_RECALL,
-		maxPassthroughCount: raw.maxPassthroughCount ?? DEFAULT_MAX_PASSTHROUGH_COUNT,
+		minLength: Math.floor(raw.minLength ?? DEFAULT_MIN_LENGTH),
+		maxRecall: Math.floor(raw.maxRecallBeforePassthrough ?? DEFAULT_MAX_RECALL),
+		maxPassthroughCount: Math.floor(raw.maxPassthroughCount ?? DEFAULT_MAX_PASSTHROUGH_COUNT),
 		showData: raw.showData ?? false,
 		debug: raw.debug ?? false,
 		distillRateFloor: raw.distillRateFloor ?? DEFAULT_DISTILL_RATE_FLOOR,

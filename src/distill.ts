@@ -37,7 +37,8 @@ export async function distillWithSameModel(
 	maxTokens: number,
 	signal?: AbortSignal,
 	onPromptVersion?: (version: string) => void,
-): Promise<{ passthrough: boolean; note: string; thinking?: string }> {
+): Promise<{ passthrough: boolean; note: string; thinking?: string; reason?: string }> {
+	try {
 	const variant = resolveVariant(model, debugDistillMode);
 	if (onPromptVersion) onPromptVersion(variant);
 
@@ -78,14 +79,14 @@ export async function distillWithSameModel(
 		{ apiKey: auth.apiKey, headers: auth.headers, maxTokens, signal },
 	);
 
-	// Truncation guard: if the model hit the max_tokens cap mid-output, the
-	// returned text is partial — its tail may be a half sentence or even split
-	// inside a <thinking> block. Treat this as "could not safely distill" and
-	// fall back to passthrough rather than handing the agent a torn note.
-	if (response.stopReason === "length") {
+	// Non-stop stopReason guard: if the model did not finish cleanly (covers
+	// "length", "end_turn", "max_tokens", etc.), the output may be partial.
+	// Fall back to passthrough with the original content.
+	if (response.stopReason !== "stop") {
 		return {
 			passthrough: true,
-			note: `[DISTILLATION TRUNCATED — output hit max_tokens=${maxTokens}; falling back to passthrough]`,
+			note: contentText,
+			reason: `distillation stopReason: ${response.stopReason}`,
 		};
 	}
 
@@ -119,11 +120,11 @@ export async function distillWithSameModel(
 	}
 
 	const sentinelLike = normalized
-		.replace(/^["'`]+|["'`]+$/g, "")
 		.replace(/[.!。]+$/g, "")
+		.replace(/^(["'`])(.*)\1$/s, "$2")
 		.trim();
 
-	if (sentinelLike === DISTILLER_SENTINEL) {
+	if (sentinelLike.toLowerCase() === DISTILLER_SENTINEL.toLowerCase()) {
 		return {
 			passthrough: true,
 			note: strippedText,
@@ -133,8 +134,9 @@ export async function distillWithSameModel(
 	if (strippedText.length >= contentText.length) {
 		return {
 			passthrough: true,
-			note: "[FAILING DISTILLATION: " + strippedText.length + " >= " + contentText.length + "]" + strippedText,
+			note: contentText,
 			thinking,
+			reason: `distillation blowup: ${strippedText.length} >= ${contentText.length}`,
 		};
 	}
 	return {
@@ -142,4 +144,17 @@ export async function distillWithSameModel(
 		note: strippedText,
 		thinking,
 	};
+	} catch (err) {
+		let fallbackNote: string;
+		try {
+			fallbackNote = serializeContent(content);
+		} catch {
+			fallbackNote = "[content serialization failed]";
+		}
+		return {
+			passthrough: true,
+			note: fallbackNote,
+			reason: `distillation API error: ${err instanceof Error ? err.message : String(err)}`,
+		};
+	}
 }

@@ -37,7 +37,7 @@ function serializeVisibleHistory(messages: ReturnType<typeof buildSessionContext
 }
 
 const SkipImpressionParams = Type.Object({
-	count: Type.Optional(Type.Number({ description: "Number of tool results to pass through unchanged (default 1). Capped by config. Set to 0 to cancel passthrough." })),
+	count: Type.Optional(Type.Number({ minimum: 0, description: "Number of tool results to pass through unchanged (default 1). Capped by config. Set to 0 to cancel passthrough." })),
 	justification: Type.Optional(Type.String({ description: "Why you need exact content including whitespace, indentation, and naming. Required when count > 0." })),
 	estimatedChars: Type.Optional(Type.Number({ description: "Estimated characters to read. Hard limit enforced at runtime. Required when count > 0." })),
 });
@@ -266,21 +266,21 @@ export default function (pi: ExtensionAPI) {
 	let passthroughRemaining = 0;
 	let lastEstimatedChars = 0;
 
-	function persistPassthroughRemaining() {
-		pi.appendEntry(PASSTHROUGH_MODE_ENTRY_TYPE, { remaining: passthroughRemaining, lastEstimatedChars });
+	function persistPassthroughRemaining(remaining: number, estimated: number) {
+		pi.appendEntry(PASSTHROUGH_MODE_ENTRY_TYPE, { remaining, lastEstimatedChars: estimated });
 	}
 
-	function persistSessionStats() {
+	function persistSessionStats(origChars: number, imprChars: number) {
 		pi.appendEntry(SESSION_STATS_ENTRY_TYPE, {
-			originalChars: cumulativeOriginalChars,
-			impressionChars: cumulativeImpressionChars,
+			originalChars: origChars,
+			impressionChars: imprChars,
 		});
 	}
 
 	function recordImpressionData(originalChars: number, impressionChars: number) {
+		persistSessionStats(cumulativeOriginalChars + originalChars, cumulativeImpressionChars + impressionChars);
 		cumulativeOriginalChars += originalChars;
 		cumulativeImpressionChars += impressionChars;
-		persistSessionStats();
 	}
 
 
@@ -309,10 +309,12 @@ export default function (pi: ExtensionAPI) {
 		// holds a reference to impression.fullContent. Reassigning impression.fullContent
 		// to [] swaps the property — the captured array reference is unaffected.
 		const result = createPassthroughToolResult(impression.fullContent);
+		// Persist-first: write delivered state to disk before mutating in-memory.
+		// appendEntry sees the spread snapshot; memory is unchanged if it throws.
+		pi.appendEntry(IMPRESSION_ENTRY_TYPE, { ...impression, fullContent: [], fullText: "", delivered: true });
 		impression.fullContent = [];
 		impression.fullText = "";
 		impression.delivered = true;
-		pi.appendEntry(IMPRESSION_ENTRY_TYPE, impression);
 		return result;
 	}
 
@@ -343,6 +345,10 @@ export default function (pi: ExtensionAPI) {
 		pi.appendEntry(IMPRESSION_CONFIG_ENTRY_TYPE, safe);
 		currentRaw = { ...currentRaw, ...safe };
 		cfg = resolveConfig(currentRaw);
+		if (passthroughRemaining > cfg.maxPassthroughCount) {
+			persistPassthroughRemaining(cfg.maxPassthroughCount, lastEstimatedChars);
+			passthroughRemaining = cfg.maxPassthroughCount;
+		}
 		registerSkipImpressionTool();
 	}
 
@@ -408,6 +414,9 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		cfg = resolveConfig(currentRaw);
+		if (passthroughRemaining > cfg.maxPassthroughCount) {
+			passthroughRemaining = cfg.maxPassthroughCount;
+		}
 		if (cfg.debugDistillMode && !cfg.debug) {
 			// Each session_start re-evaluates the file as source of truth, so if the
 			// file itself has `debug:distill-mode` set without `debug: true`, this
@@ -430,7 +439,13 @@ export default function (pi: ExtensionAPI) {
 		if (event.toolName === "recall_impression" || event.toolName === "skip_impression") return;
 		if (!cfg.enabled) return;
 		if (passthroughRemaining > 0) {
-			const fullText = serializeContent(event.content);
+			let fullText: string;
+			try {
+				fullText = serializeContent(event.content);
+			} catch (err) {
+				ctx.ui.notify(`[impression] Content serialization failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+				return;
+			}
 			const maxChars = getPassthroughHardLimit(cfg);
 			const overEstimate = lastEstimatedChars > 0 && fullText.length > lastEstimatedChars * PASSTHROUGH_OVERAGE_FACTOR;
 			const overMax = fullText.length > maxChars;
@@ -443,17 +458,17 @@ export default function (pi: ExtensionAPI) {
 				// If appendEntry throws, the rejection notice would reference an id
 				// with no JSONL backing (and no recovery on resume); decrementing first
 				// would also burn the slot for nothing.
-				impressions.set(impression.id, impression);
 				pi.appendEntry(IMPRESSION_ENTRY_TYPE, impression);
+				impressions.set(impression.id, impression);
+				persistPassthroughRemaining(passthroughRemaining - 1, lastEstimatedChars);
 				passthroughRemaining--;
-				persistPassthroughRemaining();
 				ctx.ui.notify(`[impression] Passthrough rejected: ${reason}.`, "warning");
 				return {
 					content: [{ type: "text", text: `Passthrough stored but content too large (${reason}). Impression ID: ${impression.id}. Options: (1) skip_impression again with a smaller range, (2) skip_impression count=0 to cancel and let distillation handle it, (3) save_impression to a file and use read/bash to inspect.` }],
 				};
 			} else {
+				persistPassthroughRemaining(passthroughRemaining - 1, lastEstimatedChars);
 				passthroughRemaining--;
-				persistPassthroughRemaining();
 				const chars = fullText.length;
 				recordImpressionData(chars, chars);
 				if (cfg.showData) {
@@ -473,7 +488,13 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const fullText = serializeContent(event.content);
+		let fullText: string;
+		try {
+			fullText = serializeContent(event.content);
+		} catch (err) {
+			ctx.ui.notify(`[impression] Content serialization failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+			return;
+		}
 		if (fullText.length < cfg.minLength) {
 			ctx.ui.notify(`[impression] Skipped: content length ${fullText.length} is below threshold of ${cfg.minLength}`, "info");
 			return;
@@ -492,7 +513,7 @@ export default function (pi: ExtensionAPI) {
 		const visibleHistory = getVisibleHistory(ctx);
 		const originalSystemPrompt = ctx.getSystemPrompt();
 		ctx.ui.setStatus("impression-distill", `[impression] Distilling ${fullText.length} chars with ${model.provider}/${model.id}...`);
-		let distillation: { passthrough: boolean; note: string; thinking?: string };
+		let distillation: { passthrough: boolean; note: string; thinking?: string; reason?: string };
 		try {
 			distillation = await distillWithSameModel(
 				model,
@@ -520,7 +541,11 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(formatImpressionData(fullText.length, fullText.length), "info");
 			}
 			updateShowDataStatus(ctx);
-			ctx.ui.notify(`[impression] Passthrough for ${event.toolName}`, ptLevel);
+			if (distillation.reason) {
+				ctx.ui.notify(`[impression] Passthrough for ${event.toolName}: ${distillation.reason}`, "warning");
+			} else {
+				ctx.ui.notify(`[impression] Passthrough for ${event.toolName}`, ptLevel);
+			}
 			return { content: event.content };
 		}
 
@@ -536,8 +561,8 @@ export default function (pi: ExtensionAPI) {
 		updateShowDataStatus(ctx);
 
 		const impression = newImpression(event, fullText);
-		impressions.set(impression.id, impression);
 		pi.appendEntry(IMPRESSION_ENTRY_TYPE, impression);
+		impressions.set(impression.id, impression);
 
 		return {
 			content: [{ type: "text", text: buildImpressionText(impression.id, distillation.note) }],
@@ -599,8 +624,8 @@ export default function (pi: ExtensionAPI) {
 				const overEstimate = lastEstimatedChars > 0 && contentChars > lastEstimatedChars * PASSTHROUGH_OVERAGE_FACTOR;
 				const overMax = contentChars > maxChars;
 				if (overEstimate || overMax) {
+					persistPassthroughRemaining(passthroughRemaining - 1, lastEstimatedChars);
 					passthroughRemaining--;
-					persistPassthroughRemaining();
 					const reason = overMax
 						? `content ${contentChars} chars exceeds hard limit of ${maxChars}`
 						: `content ${contentChars} chars exceeds ${PASSTHROUGH_OVERAGE_FACTOR}x estimated ${lastEstimatedChars}`;
@@ -610,8 +635,8 @@ export default function (pi: ExtensionAPI) {
 						details: undefined,
 					};
 				} else {
+					persistPassthroughRemaining(passthroughRemaining - 1, lastEstimatedChars);
 					passthroughRemaining--;
-					persistPassthroughRemaining();
 					ctx.ui.notify(`[impression] Passthrough mode (${passthroughRemaining} remaining)`, "info");
 					updateRecallShowData(ctx, impression, "passthrough", 0);
 					return deliverFullContent(impression);
@@ -640,7 +665,7 @@ export default function (pi: ExtensionAPI) {
 			const visibleHistory = getVisibleHistory(ctx);
 			const originalSystemPrompt = ctx.getSystemPrompt();
 			ctx.ui.setStatus("impression-distill", `[impression] Re-distilling ${impression.fullText.length} chars with ${model.provider}/${model.id}...`);
-			let distillation: { passthrough: boolean; note: string; thinking?: string };
+			let distillation: { passthrough: boolean; note: string; thinking?: string; reason?: string };
 			try {
 				distillation = await distillWithSameModel(
 					model,
@@ -660,20 +685,18 @@ export default function (pi: ExtensionAPI) {
 
 			const ptLevel = cfg.debug ? "warning" : "info";
 			if (distillation.passthrough) {
+				if (distillation.reason) {
+					ctx.ui.notify(`[impression] Recall passthrough for ${impression.toolName}: ${distillation.reason}`, "warning");
+				}
 				if (distillation.thinking) {
 					ctx.ui.notify(`[impression] Recall passthrough thinking: ${distillation.thinking}`, ptLevel);
 				}
+					updateRecallShowData(ctx, impression, "passthrough", distillation.note.length);
 				impression.recallCount = cfg.maxRecall;
-				updateRecallShowData(ctx, impression, "passthrough", distillation.note.length);
 				return deliverFullContent(impression);
 			}
 
 			impression.recallCount += 1;
-			if (impression.recallCount >= cfg.maxRecall) {
-				updateRecallShowData(ctx, impression, "passthrough", distillation.note.length);
-				return deliverFullContent(impression);
-			}
-
 			pi.appendEntry(IMPRESSION_ENTRY_TYPE, impression);
 			updateRecallShowData(ctx, impression, "distill", distillation.note.length);
 			return createRecallToolResult(impression.id, distillation.note, { thinking: distillation.thinking });
@@ -703,10 +726,16 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, args, _signal, _onUpdate, _ctx) {
 			const requested = args.count ?? 1;
+			if (requested < 0 || !Number.isInteger(requested)) {
+				return {
+					content: [{ type: "text", text: `Rejected: count must be a non-negative integer, got ${requested}.` }],
+					details: undefined,
+				};
+			}
 			if (requested === 0) {
+				persistPassthroughRemaining(0, 0);
 				passthroughRemaining = 0;
 				lastEstimatedChars = 0;
-				persistPassthroughRemaining();
 				return {
 					content: [{ type: "text", text: "Passthrough cancelled." }],
 					details: undefined,
@@ -737,9 +766,10 @@ export default function (pi: ExtensionAPI) {
 					details: undefined,
 				};
 			}
-			passthroughRemaining = Math.min(requested, cfg.maxPassthroughCount);
+			const newRemaining = Math.min(requested, cfg.maxPassthroughCount);
+			persistPassthroughRemaining(newRemaining, args.estimatedChars);
+			passthroughRemaining = newRemaining;
 			lastEstimatedChars = args.estimatedChars;
-			persistPassthroughRemaining();
 			return {
 				content: [{ type: "text", text: `Skipping distillation for next ${passthroughRemaining} tool result(s).` }],
 				details: undefined,
@@ -780,14 +810,21 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 			}
-			const cacheDir = join(process.cwd(), ".pi", "impression-cache");
-			const outPath = join(cacheDir, `${impression.id}.txt`);
-			mkdirSync(cacheDir, { recursive: true });
-			writeFileSync(outPath, impression.fullText, "utf-8");
-			return {
-				content: [{ type: "text", text: `Saved ${impression.fullText.length} chars to ${outPath}. Use read/bash to inspect.` }],
-				details: undefined,
-			};
+			try {
+				const cacheDir = join(process.cwd(), ".pi", "impression-cache");
+				const outPath = join(cacheDir, `${impression.id}.txt`);
+				mkdirSync(cacheDir, { recursive: true });
+				writeFileSync(outPath, impression.fullText, "utf-8");
+				return {
+					content: [{ type: "text", text: `Saved ${impression.fullText.length} chars to ${outPath}. Use read/bash to inspect.` }],
+					details: undefined,
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `Failed to save impression ${impression.id}: ${err instanceof Error ? err.message : String(err)}` }],
+					details: undefined,
+				};
+			}
 		},
 	});
 

@@ -98,7 +98,7 @@ External coupling:
 ┌──────────────────────────────────────┐
 │ /impression command                  │
 │   config / print / read / (bare)     │
-│   on / off / load / set [--persist]  │
+│   on / off / load / set [--persistent]  │
 │   help / -h / --help / ?             │
 │   tool1,tool2,... shorthand          │
 └──────────────────────────────────────┘
@@ -146,7 +146,7 @@ The `delivered` flag is appended to JSONL via the next `pi.appendEntry("impressi
 Applies to:
 - `applyConfigPatch` (line ~290) — `appendEntry` first, then mutate `currentRaw` / `cfg` / re-register `skip_impression` tool.
 - `tool_result` passthrough-rejected branch — `appendEntry(impression-v1)` before `passthroughRemaining--` + `persistPassthroughRemaining`.
-- `deliverFullContent` — capture result reference, then mutate `fullContent`/`fullText`/`delivered`, then `appendEntry`.
+- `deliverFullContent` — `appendEntry` with spread snapshot `{ ...impression, fullContent: [], fullText: "", delivered: true }` first, then mutate in-memory fields.
 
 ### 5.2 `src/config.ts`
 
@@ -192,10 +192,27 @@ distillWithSameModel(model, mode, auth, toolName, content, visibleHistory,
                      originalSystemPrompt, maxTokens, signal, onPromptVersion?)
   Pre: model is the active model with auth available
        maxTokens > 0
-  Ensures: returns { passthrough: bool, note: string, thinking?: string }
-           passthrough=true iff <passthrough/> sentinel detected in note
-           note is the LLM's response after sentinel/thinking-block stripping
-  Side: one streaming LLM call billed to the user
+  Ensures: returns { passthrough: bool, note: string, thinking?: string, reason?: string }
+           Never throws — all errors are caught and returned as passthrough.
+           Passthrough cases (passthrough=true):
+             1. API error (complete() throws):
+                note = contentText, reason = "distillation API error: <message>"
+             2. Non-"stop" stopReason (response.stopReason !== "stop"):
+                note = contentText, reason = "distillation stopReason: <reason>"
+             3. Sentinel detected (strict mechanical match — entire normalized text
+                IS the sentinel, optionally wrapped in one layer of backticks/quotes,
+                trailing punctuation stripped; case-insensitive):
+                note = strippedText (no reason — model chose passthrough)
+             4. Empty after thinking extraction:
+                note = DISTILLER_SENTINEL (no reason — model chose passthrough)
+             5. Length blowup (strippedText.length >= contentText.length):
+                note = contentText, reason = "distillation blowup: ..."
+           Normal distillation (passthrough=false):
+             note = strippedText (thinking-stripped LLM output)
+           reason is present ONLY on non-normal passthrough (cases 1, 2, 5).
+           Absent for model-chosen passthrough (cases 3, 4) and normal distillation.
+  Invariant: unclosed <thinking> tags are left in text as valid content (intentional).
+  Side: one streaming LLM call billed to the user (zero if API error on call setup)
 ```
 
 ### 5.4 `src/result-builders.ts`
@@ -372,7 +389,7 @@ Plugin → host boundaries. Each block follows §3.2 of `prompts/current/workflo
 
 ## 6. Key design decisions
 
-1. **Disk-first for all state mutations.** Round 4 reordered `applyConfigPatch` and the `tool_result` passthrough-rejected branch so that `pi.appendEntry` precedes the in-memory mutation. Rationale: JSONL is the durable single source of truth; on `appendEntry` failure, in-memory state must not lead the log. Two known internal-only races (D-1 / D-2 in the audit log: `recall_impression.execute` non-terminal recall and `recordImpressionData`) deliberately keep memory-first because they are self-healing on the next `session_start` replay and changing them would complicate hot paths for negligible gain.
+1. **Disk-first for all state mutations.** `pi.appendEntry` precedes the in-memory mutation for all observable state changes. Rationale: JSONL is the durable single source of truth; on `appendEntry` failure, in-memory state must not lead the log. One known internal-only exception: `recall_impression.execute` non-terminal `recallCount` increment deliberately keeps memory-first because it is self-healing on the next `session_start` replay and changing it would complicate the hot path for negligible gain.
 
 2. **`delivered` flag as one-shot lifecycle.** Once a recall delivers the full content to the LLM (whether via passthrough mode, recallCount cap, or sentinel), `fullContent` and `fullText` are emptied and `delivered=true` is appended. Subsequent `recall_impression` and `save_impression` throw — the LLM already has the content in its message history, so re-fetching is wasted. This trades "always recoverable" for "memory-bounded long sessions".
 
@@ -396,8 +413,8 @@ Plugin → host boundaries. Each block follows §3.2 of `prompts/current/workflo
 
    **Three defense lines** keep the distillation safe even when the budget is wrong:
 
-   1. **Truncation guard** (`src/distill.ts`): if `response.stopReason === "length"`, the LLM hit `max_tokens` mid-output. The note's tail may be a half sentence or even split inside a `<thinking>` block. Returning `passthrough: true` falls back to the original tool result instead of handing the agent a torn note. Defends against under-sized cap.
-   2. **Length blowup guard** (`src/distill.ts`, original upstream behavior): if `strippedText.length >= contentText.length` after sentinel/thinking strip, the digest defeats its own purpose — return `passthrough: true`. Defends against the model writing a digest that is longer than the original.
+   1. **Non-stop stopReason guard** (`src/distill.ts`): if `response.stopReason !== "stop"` (covers `"length"`, `"end_turn"`, `"max_tokens"`, etc.), the LLM did not finish cleanly. Returns `passthrough: true` with `note = contentText` and `reason = "distillation stopReason: <reason>"`. Falls back to the original tool result instead of handing the agent a torn or incomplete note.
+   2. **Length blowup guard** (`src/distill.ts`): if `strippedText.length >= contentText.length` after sentinel/thinking strip, the digest defeats its own purpose — returns `passthrough: true` with `note = contentText` (the original content, not the bloated output) and `reason = "distillation blowup: ..."`. Defends against the model writing a digest that is longer than the original.
    3. **Budget formula**: bounds `max_tokens` between 1024 and the model's per-call ceiling.
 
    **`distillRateFloor` lower-bound clamp.** Like the other numeric config fields, `distillRateFloor` is bounded below by `0` via `clampNumeric`; out-of-range values get a `ctx.ui.notify` warning and are silently coerced.
