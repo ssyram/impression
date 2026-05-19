@@ -1,4 +1,4 @@
-import type { Theme } from "@mariozechner/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { ImpressionEntry } from "./types.ts";
 
 export function formatOriginalCall(entry: ImpressionEntry, theme: Theme): string {
