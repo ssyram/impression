@@ -130,10 +130,14 @@ export async function distillWithSameModel(
 			thinking,
 		};
 	}
-	if (strippedText.length >= contentText.length) {
+		// Overhead from impression-text.md template wrapping (header + footer ≈ 338 chars).
+	// Without accounting for this, short content near minLength can pass the
+	// blowup guard (note < original) but end up longer after template wrapping.
+	const TEMPLATE_WRAP_OVERHEAD = 338;
+	if (strippedText.length + TEMPLATE_WRAP_OVERHEAD >= contentText.length) {
 		return {
 			passthrough: true,
-			note: "[FAILING DISTILLATION: " + strippedText.length + " >= " + contentText.length + "]" + strippedText,
+			note: "[FAILING DISTILLATION: " + (strippedText.length + TEMPLATE_WRAP_OVERHEAD) + " >= " + contentText.length + "]" + strippedText,
 			thinking,
 		};
 	}
