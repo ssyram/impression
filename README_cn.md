@@ -43,7 +43,7 @@ python3 setup.py
 #### 1. 安装 pi
 
 ```bash
-npm install -g @mariozechner/pi-coding-agent
+npm install -g @earendil-works/pi-coding-agent
 ```
 
 #### 2. 设置 API Key
@@ -219,10 +219,10 @@ impression/
 
 除 pi 已内置的内容外，无需额外依赖：
 
-- `@mariozechner/pi-ai`
-- `@mariozechner/pi-coding-agent`
-- `@mariozechner/pi-tui`
-- `@sinclair/typebox`
+- `@earendil-works/pi-ai`
+- `@earendil-works/pi-coding-agent`
+- `@earendil-works/pi-tui`
+- `typebox`
 
 ## 许可证
 

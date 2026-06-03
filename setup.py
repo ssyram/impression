@@ -105,7 +105,7 @@ def ensure_pi() -> bool:
     warn("pi is not installed.")
     if not ask_yes_no("Install pi via npm now?"):
         warn("Skipping pi installation. You can install it manually:")
-        info("  npm install -g @mariozechner/pi-coding-agent")
+        info("  npm install -g @earendil-works/pi-coding-agent")
         return False
 
     # Check for npm
@@ -115,14 +115,14 @@ def ensure_pi() -> bool:
 
     info("Installing pi globally via npm...")
     try:
-        run(["npm", "install", "-g", "@mariozechner/pi-coding-agent"])
+        run(["npm", "install", "-g", "@earendil-works/pi-coding-agent"])
         info("pi installed successfully.")
         return True
     except subprocess.CalledProcessError as e:
         error(f"npm install failed (exit code {e.returncode}).")
-        warn("Try running manually: npm install -g @mariozechner/pi-coding-agent")
+        warn("Try running manually: npm install -g @earendil-works/pi-coding-agent")
         if platform.system() != "Windows":
-            warn("If you get a permission error, try: sudo npm install -g @mariozechner/pi-coding-agent")
+            warn("If you get a permission error, try: sudo npm install -g @earendil-works/pi-coding-agent")
             warn("Or use nvm to manage Node.js installations without sudo.")
         return False
 

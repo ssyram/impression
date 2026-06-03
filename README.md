@@ -43,7 +43,7 @@ Works on **macOS**, **Linux**, and **Windows** (PowerShell / Git Bash / WSL).
 #### 1. Install pi
 
 ```bash
-npm install -g @mariozechner/pi-coding-agent
+npm install -g @earendil-works/pi-coding-agent
 ```
 
 #### 2. Set an API key
@@ -221,10 +221,10 @@ All prompts are plain Markdown files in `prompts/`. Edit them directly to tune d
 
 None beyond what pi already bundles:
 
-- `@mariozechner/pi-ai`
-- `@mariozechner/pi-coding-agent`
-- `@mariozechner/pi-tui`
-- `@sinclair/typebox`
+- `@earendil-works/pi-ai`
+- `@earendil-works/pi-coding-agent`
+- `@earendil-works/pi-tui`
+- `typebox`
 
 ## License
 

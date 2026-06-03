@@ -324,7 +324,7 @@ Plugin → host boundaries. Each block follows §3.2 of `prompts/current/workflo
 
 ```
 接口：impression plugin → convertToLlm(messages: AgentMessage[]): Message[]
-       (re-exported by @mariozechner/pi-coding-agent — src/index.ts:150)
+      (re-exported by @earendil-works/pi-coding-agent — src/index.ts:150)
 
 输入数据：
   AgentMessage[] — taken from buildSessionContext(getEntries(), getLeafId()).messages.
