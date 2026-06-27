@@ -249,20 +249,41 @@ when unsure. If the criterion is about hallucination/faithfulness, list every un
 claim in NOTE (quote it).
 Output ONLY minified JSON: {"score":N,"issues":["..."],"notes":"one line"}"""
 
-def judge_one(cfg: dict, judge_model: str, source: str, note: str, c: dict, max_tokens=1024):
+def _judge_once(cfg, judge_model, source, note, c, max_tokens=1024):
+    """One judge call. Returns (score|None, issues). None score = parse failure (excluded,
+    NOT counted as 0 — a parse fail is judge-side noise, not a 'fully fabricated' verdict)."""
     user = (f"CRITERION id={c['id']}:\n{c['body']}\n\n"
             f"===== SOURCE =====\n{source}\n\n===== NOTE =====\n{note}")
     jc = dict(cfg); jc["model"] = judge_model
     text, _ = call_llm(jc, JUDGE_SYS, user, max_tokens)
     m = re.search(r"\{[\s\S]*\}", text)
     if not m:
-        return {"id": c["id"], "score": 0, "issues": ["JUDGE_PARSE_FAIL"], "notes": text[:120]}
+        return None, ["JUDGE_PARSE_FAIL"]
     try:
         o = json.loads(m.group(0))
-        return {"id": c["id"], "score": int(o.get("score", 0)),
-                "issues": o.get("issues", []), "notes": str(o.get("notes", ""))}
+        return int(o.get("score", 0)), o.get("issues", [])
     except Exception:
-        return {"id": c["id"], "score": 0, "issues": ["JUDGE_PARSE_FAIL"], "notes": text[:120]}
+        return None, ["JUDGE_PARSE_FAIL"]
+
+
+# K = how many times to judge each note; the score is the MEDIAN (robust to a single bad
+# draw — the no-fabrication axis swings up to 3 points on identical notes). Set via --judge-k.
+JUDGE_K = 1
+
+def judge_one(cfg: dict, judge_model: str, source: str, note: str, c: dict, max_tokens=1024):
+    import statistics as st
+    scores, all_issues = [], []
+    for _ in range(JUDGE_K):
+        sc, iss = _judge_once(cfg, judge_model, source, note, c, max_tokens)
+        if sc is not None:
+            scores.append(sc)
+        if iss and iss != ["JUDGE_PARSE_FAIL"]:
+            all_issues.extend(iss)
+    if not scores:
+        return {"id": c["id"], "score": 0, "issues": ["ALL_JUDGE_PARSE_FAIL"], "scores": []}
+    med = int(round(st.median(scores)))
+    # keep issues only from runs at/below the median verdict (the critical ones)
+    return {"id": c["id"], "score": med, "issues": all_issues[:4], "scores": scores}
 
 
 # ---------- sample loading ----------
@@ -306,7 +327,10 @@ def main():
     ap.add_argument("--workers", type=int, default=16, help="concurrent API calls (e.g. 32, 128)")
     ap.add_argument("--samples", type=int, default=1,
                     help="distillation samples per (model,sample): the model re-runs the same input N times to measure its own output stability")
+    ap.add_argument("--judge-k", type=int, default=1,
+                    help="judge each note K times, take the MEDIAN (robust to noisy axes like no-fabrication)")
     args = ap.parse_args()
+    global JUDGE_K; JUDGE_K = args.judge_k
 
     configs = json.loads(Path(args.configs).read_text())["configs"]
     only = set(args.only.split(",")) if args.only else None
