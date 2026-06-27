@@ -258,3 +258,31 @@ redundant with existing rules (no behavior lost, agent-voice still grep-tested).
 - opus-4-8 no-fabrication **2→4**, faithfulness **2→5** (the exact stitching error fixed).
 - gpt-5.5 **4→5**, opus-4.6t **3→4**. The three strong models now nf 4-5.
 - glm/deepseek flat (2/1) — weak tail unresponsive, left per 整体最优. No selectivity regression.
+  (Caveat: iter 8 full-run drew opus-4-8 back to 2 — the [2,4,2] swing shows this axis is at
+  the judge noise floor on dense greps; C6 is a real but noise-limited gain. See RESULTS.)
+
+---
+
+## [E2] eval: incremental-reread sample (the re-read-under-sharper-concern feature)
+
+**Files:** `eval/samples/incremental-reread/`
+
+**Why:** the user was curious whether a SECOND distillation of (a section of) the same source,
+now under a SPECIFIC concern, can incrementally surface detail the broad first read skipped —
+without re-emitting the overview already in history. Mined from the real agent-spec session:
+first read was open-ended ("理解全文"), then a sharp follow-up ("intervention point? rule
+shape? trigger/predicate/enforcement? pitfalls?") triggered a re-read.
+
+**Sample:** history carries the prior BROAD note (title/authors/SMU/"framework"/95.56%) plus
+the sharp re-read concern; tool-result is the real paper rule-mechanism section (7.3KB). Tests
+(a) grep: surfaces trigger/predicate/enforcement; (b) judge `incremental-not-restate`: extracts
+the NEW mechanism, does NOT re-state the overview already in history.
+
+**Eval evidence (iter 9, judge-k=3, 5 models):** **clean across the board** — grep 4/4 all
+models; incremental-not-restate **5,5,5,5,4**; faithfulness 5, no-fabrication 4-5. Even the
+weak-tail models (glm, deepseek) do this well (it is not the dense-grep-stitching trap).
+gpt-5.5's note extracted the exact rule shape + the `@inspect_transfer` syntax example + the
+four enforcement kinds, dropped all overview, and honestly reported the source has no separate
+pitfall list (answering "有没有坑" by what the source does/doesn't say, no fabrication).
+The RELEVANCE rule ("compress the NEW result, not the conversation") works as designed.
+**Conclusion: the incremental re-read mechanism is a strength, not a weak spot.**
