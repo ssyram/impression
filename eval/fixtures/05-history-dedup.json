@@ -1,0 +1,23 @@
+{
+  "id": "05-history-dedup",
+  "mode": "history-dedup",
+  "toolName": "bash",
+  "originalSystemPrompt": "You are Sisyphus. Compress the NEW tool result; do not restate what the conversation already established.",
+  "visibleHistory": "user: is the haiku stop gate fail-open or fail-close?\nassistant: I already established earlier: the stop gate's haiku verdict is FAIL-CLOSE — any spawn/timeout/parse failure blocks (exit 2). The exit_code_soft_gate's Connect branch is fail-OPEN but that's a separate path. Now let me confirm the test names that cover this.\nassistant: Running the test grep.",
+  "toolResult": "crates/hook/src/main.rs:412:    fn haiku_verdict_malformed_blocks() {\ncrates/hook/src/main.rs:430:    fn haiku_verdict_timeout_blocks() {\ncrates/hook/src/main.rs:451:    fn exit_code_soft_gate_connect_fail_open() {",
+  "expect": {
+    "passthrough": false,
+    "must_contain": ["main.rs"],
+    "must_contain_any": [["haiku_verdict_malformed_blocks", "malformed"], ["haiku_verdict_timeout_blocks", "timeout"]],
+    "must_not_contain": ["fail-close means", "the stop gate is fail-close because", "as established, haiku verdict blocks"],
+    "shorter_than_source": true,
+    "require_also_contains": true,
+    "judge_rubric": {
+      "key_facts": [
+        "three test fn names at main.rs:412/430/451 covering malformed-blocks, timeout-blocks, connect-fail-open"
+      ],
+      "must_not_invent": "any test name not in the grep output",
+      "concern": "agent ALREADY knows the fail-close conclusion from history; the NEW result is just the test names. A good note records the NEW test names and does NOT restate the fail-close analysis already in history."
+    }
+  }
+}

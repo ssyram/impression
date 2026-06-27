@@ -1,0 +1,8 @@
+# never commit eval run outputs or any local endpoint config (may embed keys)
+out/
+configs.local.json
+*.local.json
+.env
+configs.tune.json
+configs.smoke.json
+configs.mm3.json

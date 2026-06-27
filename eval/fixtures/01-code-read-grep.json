@@ -1,0 +1,25 @@
+{
+  "id": "01-code-read-grep",
+  "mode": "large-grep",
+  "toolName": "bash",
+  "originalSystemPrompt": "You are Sisyphus, a senior engineer. You delegate, verify, and ship. Be concise. File references: `path/file.rs:42`.",
+  "visibleHistory": "user: I want to add a soft-rule routing layer on top of the existing tool-permission gate. First map the current permission code precisely — where does the allow/deny decision get made, and what's the precedent for a rule that needs an extra check?\nassistant: Let me grep the permission decision path.",
+  "toolResult": "crates/server/src/automaton.rs:126:///   whitelist non-empty AND no whitelist match → DENY\ncrates/server/src/automaton.rs:132:    pub whitelist: Vec<PermRule>,\ncrates/server/src/automaton.rs:134:    pub blacklist: Vec<PermRule>,\ncrates/server/src/automaton.rs:150:    /// When true on a *whitelist* rule, this rule additionally requires\ncrates/server/src/automaton.rs:173:    /// Set when the matched whitelist rule has `requires_dispatch: true`.\ncrates/server/src/automaton.rs:1086:    pub fn check_tool_permission_detail(\ncrates/server/src/perm_dsl.rs:56:pub fn match_rule(\ncrates/server/src/perm_dsl.rs:186:    if rule.requires_dispatch && list_kind == ListKind::Blacklist {",
+  "expect": {
+    "passthrough": false,
+    "must_contain": ["automaton.rs", "perm_dsl.rs", "check_tool_permission_detail", "requires_dispatch"],
+    "must_contain_any": [["1086", ":1086"], ["186", ":186"]],
+    "must_not_contain": ["I will", "Next, I", "let me grep", "let me read", "My approach"],
+    "shorter_than_source": true,
+    "require_also_contains": true,
+    "judge_rubric": {
+      "key_facts": [
+        "check_tool_permission_detail is the decision function (automaton.rs:1086)",
+        "requires_dispatch is the precedent for a rule needing an extra check (perm_dsl.rs:186, meaningless on blacklist)",
+        "whitelist/blacklist are Vec<PermRule>"
+      ],
+      "must_not_invent": "any line number or symbol not in the grep output",
+      "concern": "outer agent is locating the allow/deny decision point and the requires_dispatch precedent before designing soft-rules"
+    }
+  }
+}

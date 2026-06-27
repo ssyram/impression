@@ -1,0 +1,16 @@
+{
+  "id": "02-passthrough-prompt-rules",
+  "mode": "passthrough-rules",
+  "toolName": "read",
+  "originalSystemPrompt": "You are Sisyphus. When the user asks you to follow a workflow or skill verbatim, read it exactly and apply each step as written.",
+  "visibleHistory": "user: Read docs/workflow.md and follow its §4.1 research phase exactly — I want you to apply its rules verbatim, not summarize them.\nassistant: Reading the workflow rules to apply verbatim.",
+  "toolResult": "## 4.1 调研阶段\n\n产出调研报告，内容必须严格包含以下四节，缺一不可：\n1. 梳理本项目已有的相关基础设施和能力\n2. 调研外部现有实现和学术文献\n3. 对比各方案的优劣和适用条件\n4. 给出推荐方案及理由\n\n禁止：在未读设计文档的情况下开始编码。禁止：跳过任一节。每节必须有显式小标题。",
+  "expect": {
+    "passthrough": true,
+    "judge_rubric": {
+      "key_facts": ["this is rules/skill text the agent must follow verbatim, so it should be passed through unchanged, not summarized"],
+      "must_not_invent": "n/a — passthrough returns the sentinel",
+      "concern": "agent explicitly asked to apply the workflow rules verbatim; compressing them would lose the exact wording it must follow"
+    }
+  }
+}

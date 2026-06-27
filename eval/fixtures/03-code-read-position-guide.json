@@ -1,0 +1,26 @@
+{
+  "id": "03-code-read-position-guide",
+  "mode": "code-read",
+  "toolName": "read",
+  "originalSystemPrompt": "You are Sisyphus. You edit code precisely. Use `Position guide:` line ranges instead of re-reading.",
+  "visibleHistory": "user: I need to add a `soft_rules` field to PermRule. Read perm_dsl.rs around the struct and tell me exactly where to edit.\nassistant: Reading perm_dsl.rs to locate the PermRule struct and its validation.",
+  "toolResult": "  176\t/// Validate that a rule's flags make sense for the list it's on.\n  177\tpub fn validate_rule(rule: &PermRule, list_kind: ListKind) -> Result<(), String> {\n  178\t    // requires_dispatch only meaningful on whitelist\n  186\t    if rule.requires_dispatch && list_kind == ListKind::Blacklist {\n  187\t        return Err(\n  188\t            \"requires_dispatch is meaningless on blacklist rules\".to_string(),\n  189\t        );\n  190\t    }\n  191\t    Ok(())\n  192\t}\n  205\tpub struct PermRule {\n  206\t    pub name: String,\n  207\t    pub input: BTreeMap<String, String>,\n  208\t    pub requires_dispatch: bool,\n  211\t    pub _extra: HashMap<String, Value>,\n  212\t}",
+  "expect": {
+    "passthrough": false,
+    "must_contain": ["PermRule", "validate_rule", "perm_dsl.rs"],
+    "must_contain_any": [["205", "206", "207", "208"], ["186", "validate_rule"]],
+    "must_not_contain": ["I will add", "Next, edit the", "let me also read"],
+    "shorter_than_source": true,
+    "require_position_guide": true,
+    "require_also_contains": true,
+    "judge_rubric": {
+      "key_facts": [
+        "PermRule struct is at perm_dsl.rs ~205 with fields name/input/requires_dispatch/_extra",
+        "validate_rule at ~177-192 rejects requires_dispatch on blacklist",
+        "the edit site for a new soft_rules field is the PermRule struct body"
+      ],
+      "must_not_invent": "any field not shown (e.g. do not claim PermRule already has soft_rules)",
+      "concern": "agent is about to edit PermRule to add a field and needs exact line ranges, not a re-read"
+    }
+  }
+}
