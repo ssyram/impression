@@ -283,11 +283,29 @@ def load_sample(d: Path):
 
 # ---------- main ----------
 
+def _distill_cell(cfg, s, rep, max_tokens):
+    """One distillation: (model, sample, repeat-index). Returns a result dict."""
+    variant = cfg.get("variant", "third-person")
+    system, user = build_prompts(variant, s["sys_prompt"], s["history"],
+                                 s["tool_result"], s["tool_name"], max_tokens)
+    text, finish = call_llm(cfg, system, user, max_tokens)
+    out = parse_distillation(text, finish, len(s["tool_result"]))
+    out_dir = HERE / "out" / cfg["name"]; out_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "" if rep == 0 else f".r{rep}"
+    (out_dir / f"{s['id']}{suffix}.txt").write_text(
+        f"passthrough={out['passthrough']}\n--- thinking ---\n{out['thinking']}\n--- note ---\n{out['note']}")
+    return {"cfg": cfg["name"], "sample": s["id"], "rep": rep, "out": out, "s": s}
+
+
 def main():
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     ap = argparse.ArgumentParser()
     ap.add_argument("--judge", help="judge model id (enables Layer 2)")
     ap.add_argument("--only", help="comma list of sample ids")
     ap.add_argument("--configs", default=str(HERE / "configs.json"))
+    ap.add_argument("--workers", type=int, default=16, help="concurrent API calls (e.g. 32, 128)")
+    ap.add_argument("--samples", type=int, default=1,
+                    help="distillation samples per (model,sample): the model re-runs the same input N times to measure its own output stability")
     args = ap.parse_args()
 
     configs = json.loads(Path(args.configs).read_text())["configs"]
@@ -296,44 +314,71 @@ def main():
                    and (only is None or d.name in only)]
     if not sample_dirs:
         print("no samples found under eval/samples/", file=sys.stderr); sys.exit(1)
+    samples = [load_sample(d) for d in sample_dirs]
 
-    rows = []
+    pool = ThreadPoolExecutor(max_workers=args.workers)
+
+    # ---- Phase 1: parallel distillation (model × sample × repeat) ----
+    dfuts = {}
     for cfg in configs:
-        out_dir = HERE / "out" / cfg["name"]; out_dir.mkdir(parents=True, exist_ok=True)
-        variant = cfg.get("variant", "third-person")
-        max_tokens = cfg.get("maxTokens", 8192)
-        for d in sample_dirs:
-            s = load_sample(d)
-            row = {"cfg": cfg["name"], "sample": s["id"], "criteria": []}
-            try:
-                system, user = build_prompts(variant, s["sys_prompt"], s["history"],
-                                             s["tool_result"], s["tool_name"], max_tokens)
-                text, finish = call_llm(cfg, system, user, max_tokens)
-                out = parse_distillation(text, finish, len(s["tool_result"]))
-                (out_dir / f"{s['id']}.txt").write_text(
-                    f"passthrough={out['passthrough']}\n--- thinking ---\n{out['thinking']}\n--- note ---\n{out['note']}")
-                # evaluate EACH criterion separately
-                for c in s["criteria"]:
-                    if not applies(c, out):
-                        row["criteria"].append({"id": c["id"], "type": c["type"], "skipped": True})
-                        continue
-                    if c["type"] in ("grep", "invariant", "mode"):
-                        ok, fails = eval_grep(c, out, len(s["tool_result"]))
-                        row["criteria"].append({"id": c["id"], "type": c["type"], "pass": ok, "fails": fails})
-                    elif c["type"] == "judge":
-                        if args.judge and not out["passthrough"]:
-                            jr = judge_one(cfg, args.judge, s["tool_result"], out["note"], c)
-                            row["criteria"].append({"id": c["id"], "type": "judge", "score": jr["score"],
-                                                    "issues": jr["issues"], "pass": jr["score"] >= 4})
-                        else:
-                            row["criteria"].append({"id": c["id"], "type": "judge", "skipped": True})
-                summarize_print(cfg["name"], s["id"], row["criteria"])
-            except Exception as e:
-                row["error"] = str(e)
-                print(f"[{cfg['name']}] {s['id']}: ERROR {e}", file=sys.stderr)
-            rows.append(row)
+        for s in samples:
+            for rep in range(args.samples):
+                dfuts[pool.submit(_distill_cell, cfg, s, rep, cfg.get("maxTokens", 8192))] = (cfg["name"], s["id"], rep)
+    cells = []
+    for fut in as_completed(dfuts):
+        name, sid, rep = dfuts[fut]
+        try:
+            cells.append(fut.result())
+            tag = "" if rep == 0 else f" r{rep}"
+            print(f"  distilled [{name}] {sid}{tag}: {'passthrough' if cells[-1]['out']['passthrough'] else 'compress'}")
+        except Exception as e:
+            cells.append({"cfg": name, "sample": sid, "rep": rep, "error": str(e)})
+            print(f"  ERROR [{name}] {sid}: {e}", file=sys.stderr)
+
+    # ---- Phase 2: parallel judging (every judge axis for every compressed cell) ----
+    jfuts = {}
+    for cell in cells:
+        if cell.get("error") or cell["out"]["passthrough"]:
+            continue
+        s, out = cell["s"], cell["out"]
+        cfg = next(c for c in configs if c["name"] == cell["cfg"])
+        for c in s["criteria"]:
+            if c["type"] == "judge" and args.judge and applies(c, out):
+                jfuts[pool.submit(judge_one, cfg, args.judge, s["tool_result"], out["note"], c)] = (cell, c["id"])
+    judge_scores = {}  # (cfg,sample,rep,critid) -> jr
+    for fut in as_completed(jfuts):
+        cell, cid = jfuts[fut]
+        key = (cell["cfg"], cell["sample"], cell["rep"], cid)
+        try: judge_scores[key] = fut.result()
+        except Exception as e: judge_scores[key] = {"score": 0, "issues": [f"ERR:{e}"]}
+    pool.shutdown()
+
+    # ---- assemble rows (one per cell) ----
+    rows = []
+    for cell in cells:
+        if cell.get("error"):
+            rows.append({"cfg": cell["cfg"], "sample": cell["sample"], "rep": cell["rep"], "error": cell["error"]}); continue
+        s, out = cell["s"], cell["out"]
+        row = {"cfg": cell["cfg"], "sample": cell["sample"], "rep": cell["rep"], "criteria": []}
+        for c in s["criteria"]:
+            if not applies(c, out):
+                row["criteria"].append({"id": c["id"], "type": c["type"], "skipped": True}); continue
+            if c["type"] in ("grep", "invariant", "mode"):
+                ok, fails = eval_grep(c, out, len(s["tool_result"]))
+                row["criteria"].append({"id": c["id"], "type": c["type"], "pass": ok, "fails": fails})
+            elif c["type"] == "judge":
+                if args.judge:
+                    jr = judge_scores.get((cell["cfg"], cell["sample"], cell["rep"], c["id"]), {"score": 0, "issues": []})
+                    row["criteria"].append({"id": c["id"], "type": "judge", "score": jr["score"],
+                                            "issues": jr.get("issues", []), "pass": jr["score"] >= 4})
+                else:
+                    row["criteria"].append({"id": c["id"], "type": "judge", "skipped": True})
+        summarize_print(cell["cfg"], cell["sample"] + ("" if cell["rep"] == 0 else f" r{cell['rep']}"), row["criteria"])
+        rows.append(row)
 
     write_report(rows)
+    if args.samples > 1:
+        write_stability(rows)
     print(f"\nreport -> {HERE / 'out' / 'report.md'}")
 
 
@@ -350,10 +395,10 @@ def summarize_print(cfg, sid, crits):
 
 
 def write_report(rows):
-    # collect all criterion ids for stable columns
     L = ["# Distillation eval report\n"]
     for r in rows:
-        L.append(f"## {r['cfg']} × {r['sample']}\n")
+        rep = r.get("rep", 0)
+        L.append(f"## {r['cfg']} × {r['sample']}{'' if rep == 0 else f' (sample r{rep})'}\n")
         if r.get("error"):
             L.append(f"ERROR: {r['error']}\n"); continue
         L.append("| criterion | type | result | detail |")
@@ -368,6 +413,36 @@ def write_report(rows):
             L.append(f"| {c['id']} | {c['type']} | {res} | {det} |")
         L.append("")
     (HERE / "out" / "report.md").write_text("\n".join(L) + "\n")
+
+
+def write_stability(rows):
+    """When --samples>1: aggregate judge scores per (cfg, sample, criterion) across reps."""
+    import statistics as st
+    from collections import defaultdict
+    agg = defaultdict(list)            # (cfg, sample, critid) -> [scores]
+    passrate = defaultdict(list)       # (cfg, sample, critid) -> [pass bools for grep]
+    for r in rows:
+        if r.get("error"):
+            continue
+        for c in r["criteria"]:
+            if c.get("skipped"):
+                continue
+            key = (r["cfg"], r["sample"], c["id"])
+            if c["type"] == "judge":
+                agg[key].append(c["score"])
+            else:
+                passrate[key].append(bool(c.get("pass")))
+    L = ["# Stability across distillation samples (model re-runs same input)\n",
+         "Judge axes: mean / sd of score over reps. Grep axes: pass fraction.\n",
+         "| model | sample | criterion | scores | mean | sd |",
+         "|---|---|---|---|--:|--:|"]
+    for key in sorted(agg):
+        sc = agg[key]
+        L.append(f"| {key[0]} | {key[1]} | {key[2]} | {sc} | {st.mean(sc):.2f} | {st.pstdev(sc):.2f} |")
+    for key in sorted(passrate):
+        pr = passrate[key]
+        L.append(f"| {key[0]} | {key[1]} | {key[2]} | {sum(pr)}/{len(pr)} pass | — | — |")
+    (HERE / "out" / "stability.md").write_text("\n".join(L) + "\n")
 
 
 if __name__ == "__main__":
