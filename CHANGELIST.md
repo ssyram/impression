@@ -172,4 +172,60 @@ traps, sub-part, rank) survives. The naming trap gained a worked example (net cl
 **Word count:** 871 → 820 (+34% over baseline; was +42%). Still above baseline but the
 content genuinely grew (3 fabrication modes + ranking) vs the original 1-line deletion test.
 
-**Eval evidence:** [iteration 4 verify in progress — must hold gpt-5.5/opus-4-8 clean]
+**Eval evidence (iter 4, judge-k=3):** compacted version statistically equivalent to verbose
+(all deltas within the ±1 judge noise floor) — gpt-5.5 clean 5/5 softcheck, selectivity
+held. No regression. Committed C2+C3+C4 as `1a3c9a3`.
+
+---
+
+## [C5] HARD RULE 3 → usefulness-first lexicographic principle
+
+**Files:** `prompts/distiller-third-person.md` (HARD RULE 3)
+
+**Problem (user-flagged):** the old rule — "Output MUST be shorter than the original, yet if
+the original is long and complex, retain ALL relevant details" — tied retention to LENGTH.
+Two failures: (a) a long paper that is mostly boilerplate gets "retain all" → bloated note;
+(b) "MUST be shorter" can pressure dropping useful info from a short dense input. The user's
+principle is cleaner and is the whole point of impression: **don't degrade execution** —
+usefulness first, compression second; retention set by DENSITY not length.
+
+**Change:** "Usefulness first, brevity second: keep every fact the concern needs, then
+compress as hard as you can. Never trade a load-bearing fact for a shorter note, and never
+pad. How much you keep is set by how much is USEFUL, not how long the source is — a long
+paper full of boilerplate compresses a lot; a short dense diff compresses little. (If keeping
+the useful part would not be shorter than the source, that is a passthrough.)"
+
+**Original meaning preserved?** The TRUE intent of the old rule (don't drop essential detail
+from long complex inputs) is preserved and generalized — it was a length-proxy for "high
+useful-information content"; the new rule states the real criterion (density) directly. The
+"must be shorter" hard constraint is reframed: shorter is the GOAL, but if the useful core
+isn't shorter, that is correctly a passthrough (not a forced lossy compression). This is a
+deliberate, user-approved **loosening** of "MUST be shorter" — it was causing the wrong
+behavior (lossy compression of dense content that should passthrough).
+
+**Word count:** 820 → 874 (the principle is longer than the one-line rule, but folds in the
+passthrough condition).
+
+**Eval evidence (iter 5, judge-k=3, + 2 new passthrough samples):**
+- **Passthrough: 4/4 models passed through BOTH the SKILL doc and the config-compare file**
+  (mode 1/1, passthrough-justified=5). The new rule did NOT over-trigger compression. The
+  user's fear (该 passthrough 没 passthrough) does not occur.
+- **Compression not broken:** paper still compresses on all 4 (compression-ratio 3-4,
+  keeps-core-idea 5); softcheck selectivity 4-5, faithful-citations 5. No degradation.
+
+---
+
+## [E1] eval: passthrough samples + judge passthrough-scoped criteria
+
+**Files:** `eval/run_eval.py`, `eval/samples/passthrough-{skill-verbatim,file-compare}/`
+
+**Problem:** no sample tested "should-passthrough-but-compressed" (a real execution-degrading
+failure: a SKILL or file-compare summarized loses the exact wording the agent needs). Also a
+bug: phase-2 judging skipped ALL passthrough cells, so a `applies_to: passthrough` judge
+criterion never ran.
+
+**Change:** (1) two >2KB passthrough samples — a commit-style SKILL the agent must follow
+verbatim, and a prod config.yaml for line-by-line diff. mode=passthrough + a
+passthrough-justified judge. (2) run_eval: phase-2 no longer blanket-skips passthrough cells;
+`applies()` already gates correctly (compress judges skip passthrough notes; passthrough
+judges run only on passthrough notes). Infra + tests, no prompt change.

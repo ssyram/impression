@@ -362,11 +362,13 @@ def main():
     # ---- Phase 2: parallel judging (every judge axis for every compressed cell) ----
     jfuts = {}
     for cell in cells:
-        if cell.get("error") or cell["out"]["passthrough"]:
+        if cell.get("error"):
             continue
         s, out = cell["s"], cell["out"]
         cfg = next(c for c in configs if c["name"] == cell["cfg"])
         for c in s["criteria"]:
+            # applies() already gates by mode (compress judges skip on passthrough notes,
+            # and a passthrough-scoped judge runs only when the note IS passthrough).
             if c["type"] == "judge" and args.judge and applies(c, out):
                 jfuts[pool.submit(judge_one, cfg, args.judge, s["tool_result"], out["note"], c)] = (cell, c["id"])
     judge_scores = {}  # (cfg,sample,rep,critid) -> jr
