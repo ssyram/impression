@@ -86,7 +86,7 @@ Passthrough format:
 ```
 <thinking>
 Current concern: [brief inference]
-Why passthrough IS justified: [which case, 1-4]
+Why passthrough IS justified: [which case, 1-5]
 </thinking>
 
 {{sentinel}}

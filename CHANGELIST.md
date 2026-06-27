@@ -286,3 +286,30 @@ four enforcement kinds, dropped all overview, and honestly reported the source h
 pitfall list (answering "有没有坑" by what the source does/doesn't say, no fabrication).
 The RELEVANCE rule ("compress the NEW result, not the conversation") works as designed.
 **Conclusion: the incremental re-read mechanism is a strength, not a weak spot.**
+
+---
+
+## [C7] grep-quote rule — TRIED, REVERTED (no benefit)
+
+**Files:** `prompts/distiller-third-person.md` (reverted)
+
+**Hypothesis:** a GENERAL rule (not per-model special-casing, which the goal says to avoid)
+— "for a grep result, quote each kept hit as shown; your words are only the relevance gloss;
+don't upgrade a hit into a fuller fact" — might lift the residual dense-grep no-fabrication on
+mid/weak models without special-casing.
+
+**Result (iter 10, 2 distiller draws × judge-k=3 — robust double resampling):** **no lift.**
+gpt-5.5 nf 4.5 (already ceiling), opus-4-8 3.0, opus-4.6t **2.0 sd=0**, glm 1.5, deepseek 2.0 —
+all within prior noise. Worse, it nudged two cells to `mode FAIL` (the "quote each hit"
+phrasing pushing toward verbatim/passthrough on a grep) and dropped opus-4-8 faithful-citations
+once. +31 words for zero gain + slight passthrough-nudge risk.
+
+**Decision: REVERTED** (per "minor rules that hurt can be removed" + "不增加特调那最好" +
+不劣化执行). This negative result is the proof that the dense-grep fabrication limit is a
+genuine MODEL + JUDGE-NOISE boundary, not a prompt-wording gap — a general rule can't move it,
+and the goal prefers no per-model special-casing. The prompt stays at the C6 state (871 words).
+
+## [C8] fix passthrough-case off-by-one
+
+Trivial: the passthrough format said "which case, 1-4" but there are 5 cases (case 5 added
+earlier). Corrected to 1-5. No behavior change.
