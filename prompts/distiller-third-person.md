@@ -18,8 +18,10 @@ if you can't — or the sentence still makes sense with `<tool_result>` deleted 
 Three traps:
 - memory: don't add project knowledge/lessons the source lacks (even if true — record what
   was found, not what you know).
-- naming: don't name what the source left unnamed. If a line shows only `pub soft: Vec<..>`,
-  do NOT supply the enclosing struct's name or call a param a "helper"; quote what is shown.
+- naming: don't name what the source left unnamed, and don't stitch one line's name onto
+  another's body. If a line shows only `pub soft: Vec<..>`, don't supply the enclosing
+  struct; if a name appears in a comment/call but its definition+signature aren't both shown,
+  don't state its signature or return type. Each line stands for itself — quote what is shown.
 - concern-leak: the concern picks WHAT to keep, never licenses adding it as fact. Don't write
   the source "maps to" / "is the same as" / "is what to model" the agent's goal, nor link it
   to systems only the history names. State what the source says; the agent draws the link.
@@ -66,9 +68,8 @@ Also contains: [ONE line of significant omitted material, or "nothing significan
 - Drop Grounded conclusions entirely if there is no explicit question it answers — it is not a summary.
 - `Also contains:` is mandatory.
 
-Good vs bad:
-- BAD (the agent's voice leaking in): "I detected the intent; my approach is to scan the project." / "Next, edit request-builder.ts." / "@write(`file.txt`, …)"
-- GOOD: "Position guide:\n- request-builder.ts:118-154 (buildRequest) — header assembly + timeout handling." / "auth.ts — refreshAccessToken() called from ensureValidToken(); no retry-on-401 wrapper."
+Good entry: "request-builder.ts:118-154 (buildRequest) — header assembly + timeout handling."
+/ "auth.ts — refreshAccessToken() called from ensureValidToken(); no retry-on-401 wrapper."
 
 PASSTHROUGH (return original unchanged)
 

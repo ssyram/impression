@@ -229,3 +229,32 @@ verbatim, and a prod config.yaml for line-by-line diff. mode=passthrough + a
 passthrough-justified judge. (2) run_eval: phase-2 no longer blanket-skips passthrough cells;
 `applies()` already gates correctly (compress judges skip passthrough notes; passthrough
 judges run only on passthrough notes). Infra + tests, no prompt change.
+
+---
+
+## [C6] naming trap: forbid signature-stitching (+ trim redundant examples)
+
+**Files:** `prompts/distiller-third-person.md`
+
+**Problem (iter 6 full run pinpointed):** the one persistent weak axis is `no-fabrication`
+on the dense real-softcheck grep. Inspecting the best models' residual flags: opus-4-8
+**misattributed a signature** — cited `build_review_logs(...) -> Vec<SoftCheck>` by stitching
+a name seen in a doc-comment (review.rs:134) onto an assumed body; the real fn is at
+tools.rs:478 returning `Vec<SoftCheckLog>`. gpt-5.5's only flag was the judge's own
+"minor imprecision" (guard.soft vs transition.soft) — judge-ceiling, not real fabrication.
+
+**Change:** extended the naming trap: "don't stitch one line's name onto another's body. If a
+name appears in a comment/call but its definition+signature aren't both shown, don't state
+its signature or return type. Each line stands for itself." Also trimmed the now-redundant
+"BAD: agent-voice" examples (covered by the concern-leak trap + the grep-deterministic
+common `no-agent-voice`/`no-tool-calls` criteria), keeping one GOOD anchor.
+
+**Original meaning preserved?** Yes — sharpens the naming trap; the trimmed BAD examples are
+redundant with existing rules (no behavior lost, agent-voice still grep-tested).
+**Loosened?** No.
+**Word count:** 901 → 871 (the stitching clause +27, the example trim −30).
+
+**Eval evidence (iter 7, judge-k=3, real-softcheck):**
+- opus-4-8 no-fabrication **2→4**, faithfulness **2→5** (the exact stitching error fixed).
+- gpt-5.5 **4→5**, opus-4.6t **3→4**. The three strong models now nf 4-5.
+- glm/deepseek flat (2/1) — weak tail unresponsive, left per 整体最优. No selectivity regression.
