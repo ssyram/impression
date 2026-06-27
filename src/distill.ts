@@ -15,9 +15,9 @@ const FIRST_PERSON_MODEL_PREFIXES: readonly string[] = [
 	"gemini",
 ];
 
-function selectVariant(model: Model<Api>): PromptVariant {
-	const id = model.id.toLowerCase();
-	if (FIRST_PERSON_MODEL_PREFIXES.some((prefix) => id.startsWith(prefix))) return "first-person";
+function selectVariant(_model: Model<Api>): PromptVariant {
+	// const id = model.id.toLowerCase();
+	// if (FIRST_PERSON_MODEL_PREFIXES.some((prefix) => id.startsWith(prefix))) return "first-person";
 	return "third-person";
 }
 
