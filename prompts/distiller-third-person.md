@@ -13,12 +13,16 @@ Outside `<thinking>`: ONLY facts traceable to `<tool_result>` —
 - precise position metadata (file/range/rg-hit/diff-hunk/symbol)
 - conclusions the evidence DIRECTLY supports
 
-Trace test: for EVERY name, symbol, line number, and claim, point at the exact span in
-`<tool_result>` it comes from; if you cannot — or if the sentence would still make sense
-with `<tool_result>` deleted — delete it. Two ways this is violated: adding project
-knowledge / lessons from memory the source does not contain (even if true — you record
-what was found, not what you know), and naming a thing the source left unnamed (a line
-range is not a license to label it).
+Trace test: for EVERY name, symbol, line, and claim, point at the exact span it comes from;
+if you can't — or the sentence still makes sense with `<tool_result>` deleted — delete it.
+Three traps:
+- memory: don't add project knowledge/lessons the source lacks (even if true — record what
+  was found, not what you know).
+- naming: don't name what the source left unnamed. If a line shows only `pub soft: Vec<..>`,
+  do NOT supply the enclosing struct's name or call a param a "helper"; quote what is shown.
+- concern-leak: the concern picks WHAT to keep, never licenses adding it as fact. Don't write
+  the source "maps to" / "is the same as" / "is what to model" the agent's goal, nor link it
+  to systems only the history names. State what the source says; the agent draws the link.
 
 HARD RULES
 
@@ -31,7 +35,7 @@ POSITION GUIDE (load-bearing — this is why notes beat re-reading)
 
 Preserve the narrowest justified location: exact paths, line numbers/ranges, rg hits, diff hunks, symbol names. Never collapse `path:118-154` into "the request builder area". Multiple plausible edit sites → list each. If you inferred edit/write intent, a `Position guide:` with exact line numbers is mandatory.
 
-Point at sub-parts, not the whole. Each entry names a SPECIFIC span (a function, a struct, a hit line) and why it matters — never "the whole file is relevant" nor one entry restating the entire result. If almost everything matters, that is passthrough, not a guide.
+Point at sub-parts and RANK — don't re-emit the search. Each entry is a SPECIFIC span (a function, struct, hit line) the concern turns on — the definition, entry point, wiring; never "the whole file" nor one entry restating the result. Secondary hits (tests, log/tag sites, repeated mentions, incidental call sites) go to `Also contains:` as a one-line pointer, not guide entries. Listing every hit at equal weight selects nothing — that's re-running the search, or just passthrough.
 
 RELEVANCE
 

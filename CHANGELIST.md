@@ -85,4 +85,91 @@ possible reclaim in a later entry (the Trace test was condensed once already fro
 - Open issue surfaced by the same resample: `subpart-selectivity` on gpt-5.5-high is a
   **stable [2,2,2]** on the high-relevance-density SoftCheck grep — it compresses well and
   doesn't fabricate, but flattens the grep instead of selecting sub-parts. The sub-part rule
-  is not yet strong enough for inputs where every hit looks relevant. → next entry.
+  is not yet strong enough for inputs where every hit looks relevant. → C2.
+
+---
+
+## [C2] Sub-part RANKING (not just "don't restate the whole")
+
+**Files:** `prompts/distiller-third-person.md` (POSITION GUIDE)
+
+**Problem:** C1's "point at sub-parts" didn't fix gpt-5.5 flattening the SoftCheck grep —
+it listed all ~17 hits (incl. test/log sites that should be `Also contains:`) at equal
+weight. selectivity stuck at [2,2,2]. The model needs a *selection* instruction, not just
+a prohibition.
+
+**Change:** added "When many hits look relevant, RANK — do not re-emit the search." The
+guide carries only the few load-bearing spans (definition, entry point, wiring); secondary
+occurrences (tests, log/tag sites, repeated mentions, incidental call sites) go to
+`Also contains:`. "A guide that lists every hit at equal weight has selected nothing."
+
+**Original meaning preserved?** Yes — extends the existing sub-part rule; nothing removed.
+**Loosened?** No.
+
+**Eval evidence (iter 1, parallel baseline, judge=opus-4-8):** gpt-5.5 real-softcheck
+`subpart-selectivity` **[2,2,2] → 4**; opus-4-8 / opus-4.6t / deepseek all 5. ✅
+
+---
+
+## [C3] Trace test 3rd violation: editorializing through the concern (IN TEST)
+
+**Files:** `prompts/distiller-third-person.md` (Trace test)
+
+**Problem (iter 1 surfaced):** `no-fabrication` (the sharp judge axis) failed hard on the
+two long/dense samples — opus-4.6t real-softcheck **faithfulness=2 no-fabrication=1**,
+opus-4.6t paper no-fabrication=1, opus-4-8 real-softcheck no-fabrication=2. The fabrications
+were a NEW mode, distinct from C1's memory-injection: the note **cross-references the source
+against the agent's concern/history and writes the connection as a source fact** —
+e.g. "the authoritative shape to model the new soft-rule guard on", "AgentSpec maps directly
+to the user's soft-rules ITE concept", "essentially the same as the haiku stop-hook". The
+concern is meant to SELECT relevance; the model crossed into INTERPRETING the source through
+the concern + its own knowledge.
+
+**Change:** Trace test's "two ways" → "three ways", adding: "editorializing through the
+concern: the concern decides WHAT to keep, never licenses adding it as a fact. Do NOT write
+that the source maps-to / is-the-same-as / is-the-authoritative-thing-to-model the agent's
+goal, nor cross-link to systems only the history mentions. Record what the source says; the
+agent draws the connection itself."
+
+**Original meaning preserved?** Yes — sharpens the existing trace boundary; the "select by
+concern" instruction (line 9, in `<thinking>`) is untouched, this only forbids letting the
+concern leak into the note body as asserted fact.
+**Loosened?** No.
+**Word count:** 809 → 871 (+62). Prompt is accreting (+42% over 613 baseline) — length
+reclaim is queued once behavior is locked (the three trace clauses can likely be tightened).
+
+**Eval evidence (iter 3, judge-k=3 median — stable after the eval added median resampling,
+since no-fabrication swings ±1.5 on identical notes):**
+- gpt-5.5: no-fabrication **5** on both softcheck & paper, faithfulness 5/5. Clean.
+- opus-4-8: softcheck nf **2→3**, paper nf **5**, faithfulness 4-5. Good.
+- opus-4.6t / deepseek: still fabricate (nf 1-2) — residual mode is **invented naming**
+  (calling an unnamed `pub soft: Vec<..>` line's struct, labeling a param a "helper").
+  Per the goal (整体最优; a weak model may be left), the strong models are the win target
+  and they are clean. C2 selectivity held (4-5 everywhere), no regression on other axes.
+
+**Decision:** C2+C3 kept — verified net-positive on the strong models, no regression.
+The weak-tail invented-naming is addressed by a sharper naming example in C4's compaction
+(may or may not lift them; not gating).
+
+---
+
+## [C4] Compaction: merge sub-part redundancy, tighten trace test
+
+**Files:** `prompts/distiller-third-person.md`
+
+**Problem:** prompt accreted to 871 words (+42% over 613 baseline). POSITION GUIDE stated
+the sub-part point ~3× (the "point at sub-parts" para + the "RANK" para + the OUTPUT FORMAT
+hint); the trace test was verbose.
+
+**Change:** merged the two sub-part paragraphs into one (keeps both the sub-part rule AND
+the ranking rule — definition/entry/wiring vs secondary→Also-contains). Tightened the trace
+test's three traps and gave the naming trap a concrete example (`pub soft: Vec<..>` → don't
+supply the struct name) aimed squarely at the weak-model failure.
+
+**Original meaning preserved?** Yes — pure densification; every rule (memory/naming/concern
+traps, sub-part, rank) survives. The naming trap gained a worked example (net clearer).
+**Loosened?** No.
+**Word count:** 871 → 820 (+34% over baseline; was +42%). Still above baseline but the
+content genuinely grew (3 fabrication modes + ranking) vs the original 1-line deletion test.
+
+**Eval evidence:** [iteration 4 verify in progress — must hold gpt-5.5/opus-4-8 clean]
