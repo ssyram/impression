@@ -1,21 +1,27 @@
-# Tuning results — 2026-06-28 (C1–C6, judge-k=3 median)
+# Tuning results — 2026-06-28 (C1–C8 + E1–E3, judge-k=3 median)
 
-Outcome of the optimization loop (8 iterations). Distiller = unified note-taker (third-person),
-871 words. Judge = claude-opus-4-8, median of 3. Models via yunwu.
+Outcome of the optimization loop (12 iterations). Distiller = unified note-taker
+(third-person), 871 words. Judge = claude-opus-4-8, median of 3. Models via yunwu.
 
-## Final scorecard (iter 8, all 6 models × 6 samples)
+## FINAL scorecard (iter 12, corrected parser, all 6 models × 7 samples)
 
-| model | passthrough | fab-grep | fab-paper | selectivity | citations | core-idea | error-extract | answer |
-|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
-| **gpt-5.5-high** | ✅ 2/2 | 4 | 5 | 4 | 5 | 5 | — | — |
-| **claude-opus-4-8** | ✅ 2/2 | 2 | 4 | 4 | 4 | 5 | 5 | 4 |
-| claude-opus-4-6-thinking | ✅ 2/2 | 2 | 3 | 4 | 5 | 5 | 5 | 5 |
-| glm-5.2 | ✅ 2/2 | 2 | 2 | 4 | 5 | 5 | — | — |
-| deepseek-v4-pro | ✅ 2/2 | 1 | 2 | 4 | 5 | 5 | — | — |
-| MiniMax-M3 | ✅ 2/2 | — | 2 | — | — | 5 | — | — |
+| model | passthrough | fab-grep | fab-paper | select | cite | core | increm | err | ans | sub-inv |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| **gpt-5.5-high** | ✅ 2/2 | 4 | 3 | 2 | 5 | 5 | 5 | 5 | — | 4 |
+| **claude-opus-4-8** | ✅ 2/2 | 3 | 5 | 5 | 5 | 5 | 5 | 4 | 4 | 5 |
+| claude-opus-4-6-thinking | ✅ 2/2 | 4 | 4 | 5 | 5 | 5 | 5 | 4 | 4 | 4 |
+| glm-5.2 | ✅ 2/2 | 2 | 4 | 5 | 5 | 5 | 3 | — | — | 5 |
+| deepseek-v4-pro | ✅ 2/2 | 2 | 2 | 4 | 5 | 5 | 5 | — | — | — |
+| MiniMax-M3 | ✅ 2/2 | — | 1 | — | — | 5 | 5 | — | — | 5 |
 
-(— = passthrough on a sub-2KB sample, correct; M3 fab-grep — = it failed to compress the
-grep, bloated it, mode FAIL — its known weakness, left per goal.)
+passthrough=both verbatim samples; fab=no-fabrication; select=subpart-selectivity;
+cite=faithful-citations; core=keeps-core-idea; increm=incremental-not-restate; sub-inv=
+subpart-not-whole. — = passthrough on a sub-2KB sample (correct) or a weak-model grep-compress
+mode-flake. **All scores swing ±1 run-to-run (judge noise sd≈1.5 even at k=3); read columns,
+not single cells.**
+
+**The iter-8 numbers earlier in git history were pre-E3 (a parser bug undercounted weak-model
+passthrough and inflated some fab scores). iter 12 above is authoritative.**
 
 ## What the loop fixed (verified, committed)
 
