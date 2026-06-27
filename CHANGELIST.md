@@ -313,3 +313,34 @@ and the goal prefers no per-model special-casing. The prompt stays at the C6 sta
 
 Trivial: the passthrough format said "which case, 1-4" but there are 5 cases (case 5 added
 earlier). Corrected to 1-5. No behavior change.
+
+---
+
+## [E3] eval: tolerate malformed-thinking-tag passthrough (measurement fix)
+
+**Files:** `eval/run_eval.py` (`parse_distillation`)
+
+**Problem (iter 11 surfaced):** glm-5.2 and deepseek-v4-pro showed `mode FAIL` on the
+verbatim passthrough samples — looked like a regression. Inspecting the raw output: **both
+models correctly DECIDED to passthrough** (their reasoning is textbook: "case 1 applies,
+summarizing would lose normative wording") and emitted `<passthrough/>`. The eval parser
+mismarked them because:
+- glm emitted its thinking prose with NO opening `<thinking>` tag, then `<passthrough/>...`
+  (trailing dots). The strip regex needs balanced tags, so the prose stayed and the trailing
+  `...` made `!= SENTINEL`.
+- deepseek emitted a lone `</thinking>` (no opener) + `<passthrough/>`.
+
+So this was a **measurement bug, not a model failure** — the weak models passthrough correctly.
+
+**Change:** `parse_distillation` now (1) strips unbalanced/stray `<thinking>`/`</thinking>`
+tags, (2) tolerates trailing dots/space on the sentinel, (3) treats a sentinel that appears
+as the final non-empty line (after preamble prose) as passthrough. Verified: glm & deepseek
+malformed outputs → passthrough=True; a clean compress note still → False.
+
+**⚠️ Finding for `src/distill.ts` (NOT changed — flagged for user):** the production parser
+has the SAME strictness (`sentinelLike === DISTILLER_SENTINEL` after only quote/punct strip,
+balanced-tag thinking strip). So in production, glm/deepseek's correct passthrough decisions
+would ALSO be mismarked as compressions → the agent gets a compressed note when it asked for
+verbatim = execution degradation on weaker models. This is a real robustness gap in
+distill.ts worth the same tolerance. Left for user decision per "测试好了最后我确定了再动
+impression 的机制" — the eval is fixed; the mechanism fix is proposed, not applied.

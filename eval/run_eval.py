@@ -106,16 +106,30 @@ def call_llm(cfg: dict, system: str, user: str, max_tokens: int):
 
 # ---------- output parsing (mirrors distill.ts) ----------
 
+def _is_sentinel(s: str) -> bool:
+    core = re.sub(r'^["\'`]+|["\'`]+$', "", s.strip())
+    core = re.sub(r"[.!。\s]+$", "", core).strip()  # tolerate trailing dots/space (glm: "<passthrough/>...")
+    return core == SENTINEL
+
 def parse_distillation(text: str, finish: str, source_len: int):
     if finish == "length":
         return {"passthrough": True, "note": "[TRUNCATED hit max_tokens]", "thinking": ""}
     thinking = "\n".join(re.findall(r"<think(?:ing)?>([\s\S]*?)</think(?:ing)?>", text))
-    stripped = re.sub(r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>", "", text).strip()
+    stripped = re.sub(r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>", "", text)
+    # tolerate UNBALANCED thinking tags (deepseek emits a lone </thinking>; glm emits the
+    # thinking prose with no opening tag). Drop stray tags and any prose that precedes a
+    # final sentinel line — the model's intent (passthrough) is unambiguous in these cases.
+    stripped = re.sub(r"</?think(?:ing)?>", "", stripped).strip()
     if not stripped:
         return {"passthrough": True, "note": SENTINEL, "thinking": thinking}
-    core = re.sub(r'^["\'`]+|["\'`]+$', "", stripped)
-    core = re.sub(r"[.!。]+$", "", core).strip()
-    if core == SENTINEL or len(stripped) >= source_len:
+    # whole output is (quote/punct-tolerant) the sentinel
+    if _is_sentinel(stripped):
+        return {"passthrough": True, "note": stripped, "thinking": thinking}
+    # sentinel appears as its own line after preamble prose (malformed-thinking case)
+    lines = [l for l in stripped.splitlines() if l.strip()]
+    if lines and _is_sentinel(lines[-1]):
+        return {"passthrough": True, "note": SENTINEL, "thinking": thinking}
+    if len(stripped) >= source_len:
         return {"passthrough": True, "note": stripped, "thinking": thinking}
     return {"passthrough": False, "note": stripped, "thinking": thinking}
 
