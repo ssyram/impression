@@ -309,6 +309,24 @@ once. +31 words for zero gain + slight passthrough-nudge risk.
 genuine MODEL + JUDGE-NOISE boundary, not a prompt-wording gap — a general rule can't move it,
 and the goal prefers no per-model special-casing. The prompt stays at the C6 state (871 words).
 
+## [investigation] deepseek over-passthrough — procv2 candidate REJECTED
+
+After convergence, investigated deepseek's mode✗. Finding: ALL its mode✗ are one direction —
+should-compress-but-passthrough (it dumps `<passthrough/>` with empty thinking), NEVER
+should-passthrough-but-compress. So it's a *token-savings miss, not execution degradation* (raw
+content is given, nothing lost) — the mildest possible issue.
+
+Tried candidate `procv2`: require answering the self-question in `<thinking>` before passthrough;
+make json/config passthrough fire only when about-to-edit/compare (not merely structured);
+emphasize default-compress. Bake-off (procv2 vs procedural, --samples 2): **REJECTED** — procv2
+was worse on everything: avg 4.529→4.472, total mode✗ 2→4, deepseek mode✗ 1→3 (worse!), all
+strong models slightly down, and it broke edit-confirm (passthrough-judge 5.0→4.3). The added
+qualifiers disturbed the models that were already correct, to chase a noisy + benign problem
+(deepseek mode✗ was 1 this run, not the 9 of the full run — it's sampling variance).
+
+**Decision: keep the converged procedural version (C11). procv2 rejected. deepseek's over-
+passthrough is benign (token miss, not degradation) + noisy — not worth a prompt change that
+costs the rest.** (Multi-sampling + bake-off again prevented an unwarranted change.)
 ## [C11] note-taker rewritten as ordered decision-tree (procedural) — unified, all models
 
 **Files:** `prompts/distiller-third-person.md` (full rewrite), `eval/run_eval.py` (--force-variant)
