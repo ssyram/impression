@@ -309,6 +309,44 @@ once. +31 words for zero gain + slight passthrough-nudge risk.
 genuine MODEL + JUDGE-NOISE boundary, not a prompt-wording gap — a general rule can't move it,
 and the goal prefers no per-model special-casing. The prompt stays at the C6 state (871 words).
 
+## [C9] passthrough: single principle, cases demoted to open examples
+
+**Files:** `prompts/distiller-third-person.md` (PASSTHROUGH + HARD RULE 3)
+
+**Why (the long design conversation behind this):** the 5-case passthrough list was a closed
+gate ("Use it ONLY when [1-5] ... otherwise compress"). A closed enumeration of an open set
+(tool outputs are open-ended) necessarily leaks — and it pushed the model toward "doesn't match
+a case → must compress", which risks compressing content that should stay verbatim (execution
+degradation). We chased a more fundamental criterion through several rounds (can-it-be-replaced →
+recall cost → future-attention of dropped info) and landed on the user's collapse: the deepest
+correct criterion, stated as a single direct test the model can actually act on.
+
+**Change:**
+- PASSTHROUGH rewritten to ONE principle: **pass through only when, for the current task,
+  essentially ALL the content is directly relevant AND it can't be safely summarized (the agent
+  needs exact phrasing); otherwise compress.** Default is compress, stated up front.
+- The 5 cases are kept but **demoted to open examples** ("examples, not an exhaustive list") —
+  they illustrate the bar, they are no longer the gate. The "ONLY when [list] ... otherwise
+  compress" closed frame is removed.
+- Added the actionable tie-breaker that replaces "estimate future value" (which the model can't
+  do) with "evaluate present certainty" (which it can): **"When unsure whether a part is
+  droppable, treat it as needed."**
+- HARD RULE 3's trailing length-based passthrough hint ("if keeping the useful part would not be
+  shorter than the source → passthrough") was **replaced** by a pointer to the single principle —
+  it was a weaker, length-flavored second criterion the user had explicitly rejected ("retention
+  by value, not length"); two different passthrough triggers would dilute the single rule.
+
+**Original meaning preserved?** The 5 cases' content is fully preserved (as examples). What
+changed is their STATUS (gate → examples) and the default's clarity (compress, explicitly). The
+length-based passthrough hint was intentionally dropped (user-rejected criterion), not lost by
+accident.
+**Loosened?** The gate is loosened (a verbatim need outside the 5 cases can now pass through);
+the default (compress) is unchanged. This is the intended direction: don't force-compress
+something that needs exact phrasing just because it doesn't match a listed case.
+
+**Eval evidence:** [full re-test in progress — watch passthrough rate on the 2 verbatim samples
+stays 6/6, compression not over-triggered nor under-triggered]
+
 ## [C8] fix passthrough-case off-by-one
 
 Trivial: the passthrough format said "which case, 1-4" but there are 5 cases (case 5 added
