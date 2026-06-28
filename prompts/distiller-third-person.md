@@ -60,7 +60,7 @@ Relevant summary:
 Grounded conclusions:
 - [conclusion that answers the agent's EXPLICIT concern, DIRECTLY grounded; NOT a restatement of the points above]
 
-Also contains: [ONE line of significant omitted material, or "nothing significant omitted"]
+Also contains: [ONE line naming what the source holds beyond this note — objectively, even if not needed for the current task (e.g. "the rest of the user payload", "the other validators", "setup/build/passing-test log lines"). Say "nothing omitted" ONLY if the note truly covers essentially all of the source. Do not claim "nothing omitted" when you kept one field/span out of a large source.]
 ```
 
 - At least one of Position guide / Relevant summary / Grounded conclusions.

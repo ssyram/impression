@@ -309,6 +309,32 @@ once. +31 words for zero gain + slight passthrough-nudge risk.
 genuine MODEL + JUDGE-NOISE boundary, not a prompt-wording gap — a general rule can't move it,
 and the goal prefers no per-model special-casing. The prompt stays at the C6 state (871 words).
 
+## [C10] Also-contains: objective "what's beyond the note", not subjective "significant omitted"
+
+**Files:** `prompts/distiller-third-person.md` (OUTPUT FORMAT)
+
+**Problem (iter 15, json-one-field sample surfaced it):** when the task needs ONE field of a
+large source (e.g. "give me subscription.tier" from a 2KB user-payload JSON), models correctly
+extracted the field — but wrote `Also contains: nothing significant omitted` while dropping
+~90% of the payload. The judge flagged the false claim (faithfulness 2 on opus-4-8/4.6t/M3).
+Root cause: the old format hint `[ONE line of significant omitted material, or "nothing
+significant omitted"]` gave a subjective "significant" escape hatch the model used to wave away
+a large omitted body.
+
+**Change:** reworded Also-contains to be OBJECTIVE — name what the source holds beyond the note
+(even if not needed for the task: "the rest of the user payload", "the other validators"); say
+"nothing omitted" ONLY if the note truly covers essentially all of the source; explicitly forbid
+claiming nothing-omitted when keeping one span of a large source.
+
+**Original meaning preserved?** Yes — Also-contains still points at omitted material; the change
+removes the subjective "significant" loophole that let a true omission be denied. This aligns
+with the original purpose (a pointer to what was set aside, in case it's needed later).
+**Loosened?** No.
+
+**Eval evidence (iter 16, judge-k=3):** json-one-field faithfulness **2→5** on opus-4-8 and
+opus-4.6t (and gpt-5.5/glm 5); the false "nothing omitted" gone. trap-looks-verbatim no
+regression. Net positive.
+
 ## [C9] passthrough: single principle, cases demoted to open examples
 
 **Files:** `prompts/distiller-third-person.md` (PASSTHROUGH + HARD RULE 3)
