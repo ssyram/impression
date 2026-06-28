@@ -9,3 +9,7 @@ configs.mm3.json
 local-testsuite/
 test_*.py
 judge_resample.py
+ask_models_out.json
+configs.ab.json
+configs.weaktest.json
+configs.tune.json
