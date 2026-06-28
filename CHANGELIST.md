@@ -309,6 +309,44 @@ once. +31 words for zero gain + slight passthrough-nudge risk.
 genuine MODEL + JUDGE-NOISE boundary, not a prompt-wording gap — a general rule can't move it,
 and the goal prefers no per-model special-casing. The prompt stays at the C6 state (871 words).
 
+## [C11] note-taker rewritten as ordered decision-tree (procedural) — unified, all models
+
+**Files:** `prompts/distiller-third-person.md` (full rewrite), `eval/run_eval.py` (--force-variant)
+
+**Why:** to push past the residual weak-tail gaps (deepseek's unstable passthrough decision,
+glm/M3 fabrication) WITHOUT special-casing models. Probed deepseek/glm/MiniMax-M3 about
+themselves (ask_models.py) — their self-diagnoses matched our eval findings and gave concrete,
+operable wording. Three independently converged on: (1) edit/diff/regex/checklist next-action →
+passthrough; (2) identifiers verbatim. Ran a PARALLEL bake-off (--force-variant) of 3 candidates
+× 6 models × 8 discriminating samples × judge-k=3, repeated to suppress noise.
+
+**Change:** the winning candidate `procedural` replaces the prose note-taker. It is an ordered
+3-step decision tree: STEP 1 passthrough-check (with deepseek's self-question "if I drop exact
+phrasing/line-order/numeric precision, can the agent still do its next action? no → passthrough"
++ M3's "note ≥80% of source → passthrough"), STEP 2 compress-faithfully (substring-verifiable
+facts, character-for-character identifiers, glm's "state WHAT not WHY", no-naming-unnamed,
+no-memory, no-concern-leak, language-pin), STEP 3 select-don't-dump (+ "quote the gap"). All
+C1-C10 defenses verified present; injection defense kept.
+
+**Original meaning preserved?** Yes — every C1-C10 behavior is carried (verified by grep +
+full-sample eval). The structure changed from prose to a decision tree; the wording is the
+models' own where they had sharper intuition about themselves.
+**Loosened?** No. **Word count:** 988 → 724 (SHORTER).
+
+**Eval evidence (full 22 samples × 6 models, judge-k=3, procedural vs third-person):**
+- Overall avg 4.502 → **4.632**; judge<4 31 → 24; strong-model regressions: **ZERO**.
+- Per model: gpt-5.5 4.69→4.92, opus-4-8 4.69→4.74, opus-4.6t 4.32→4.65, glm 4.44→4.77,
+  M3 4.15→4.34 (all up); deepseek 4.46→4.35 — a single-sample sampling artifact
+  (real-edit-verbatim passthrough is 50/50 on deepseek either way; that run drew the compress
+  side). deepseek's mode✗ went 6→1 (its self-diagnosed "needs an ordered decision tree" fixed
+  by exactly that).
+- The bake-off also REJECTED a `fusion` candidate (grafting gems onto a different base landed
+  between, not above — coupling, not 1+1). Multi-sampling prevented both a false-reject of
+  procedural (its round-1 mode✗=5 was noise) and a false-accept of fusion.
+
+**Net: one prompt, better for ALL models, 27% shorter. The "special-tune the weak ones" goal
+dissolved into a single superior prompt — no per-model routing needed.**
+
 ## [C10] Also-contains: objective "what's beyond the note", not subjective "significant omitted"
 
 **Files:** `prompts/distiller-third-person.md` (OUTPUT FORMAT)

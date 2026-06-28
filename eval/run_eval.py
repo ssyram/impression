@@ -43,7 +43,9 @@ def render(tmpl: str, vars: dict) -> str:
 def build_prompts(variant: str, sys_prompt: str, history: str, tool_result: str,
                   tool_name: str, max_tokens: int):
     sys_tmpl = (PROMPTS / f"distiller-{variant}.md").read_text()
-    usr_tmpl = (PROMPTS / f"distiller-user-{variant}.md").read_text()
+    upath = PROMPTS / f"distiller-user-{variant}.md"
+    # candidate variants only need a system file; reuse third-person's user prompt if absent
+    usr_tmpl = (upath if upath.exists() else PROMPTS / "distiller-user-third-person.md").read_text()
     n = len(tool_result)
     if n > max_tokens * 10:
         length_note = " (considered very long, more aggressive compression expected)"
@@ -318,9 +320,11 @@ def load_sample(d: Path):
 
 # ---------- main ----------
 
+FORCE_VARIANT = None  # set by --force-variant: make EVERY model use distiller-<this>.md
+
 def _distill_cell(cfg, s, rep, max_tokens):
     """One distillation: (model, sample, repeat-index). Returns a result dict."""
-    variant = cfg.get("variant", "third-person")
+    variant = FORCE_VARIANT or cfg.get("variant", "third-person")
     system, user = build_prompts(variant, s["sys_prompt"], s["history"],
                                  s["tool_result"], s["tool_name"], max_tokens)
     text, finish = call_llm(cfg, system, user, max_tokens)
@@ -343,8 +347,11 @@ def main():
                     help="distillation samples per (model,sample): the model re-runs the same input N times to measure its own output stability")
     ap.add_argument("--judge-k", type=int, default=1,
                     help="judge each note K times, take the MEDIAN (robust to noisy axes like no-fabrication)")
+    ap.add_argument("--force-variant",
+                    help="make EVERY model use distiller-<this>.md (for comparing candidate prompt versions)")
     args = ap.parse_args()
     global JUDGE_K; JUDGE_K = args.judge_k
+    global FORCE_VARIANT; FORCE_VARIANT = args.force_variant
 
     configs = json.loads(Path(args.configs).read_text())["configs"]
     only = set(args.only.split(",")) if args.only else None
