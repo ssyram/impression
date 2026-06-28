@@ -348,10 +348,16 @@ def main():
 
     configs = json.loads(Path(args.configs).read_text())["configs"]
     only = set(args.only.split(",")) if args.only else None
-    sample_dirs = [d for d in sorted((HERE / "samples").iterdir()) if d.is_dir()
-                   and (only is None or d.name in only)]
+    # Public samples live in samples/. Private/local-only samples (e.g. mined from real
+    # sessions, gitignored) can live in local-testsuite/ — scanned automatically if present,
+    # silently skipped for contributors who don't have it.
+    roots = [HERE / "samples"]
+    if (HERE / "local-testsuite").is_dir():
+        roots.append(HERE / "local-testsuite")
+    sample_dirs = [d for root in roots for d in sorted(root.iterdir())
+                   if d.is_dir() and (only is None or d.name in only)]
     if not sample_dirs:
-        print("no samples found under eval/samples/", file=sys.stderr); sys.exit(1)
+        print("no samples found under eval/samples/ (or local-testsuite/)", file=sys.stderr); sys.exit(1)
     samples = [load_sample(d) for d in sample_dirs]
 
     pool = ThreadPoolExecutor(max_workers=args.workers)

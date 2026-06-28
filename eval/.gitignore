@@ -6,3 +6,6 @@ configs.local.json
 configs.tune.json
 configs.smoke.json
 configs.mm3.json
+local-testsuite/
+test_*.py
+judge_resample.py
