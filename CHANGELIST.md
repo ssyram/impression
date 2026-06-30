@@ -520,4 +520,46 @@ procedural rewrite (`10f8e3b`) DROPPED two clauses present since C3:
 proven SAFE and helps the production model — NOT as a proven universal drift-fix. The planning
 drift under a strong goal is largely a MODEL-level trait the metric is too noisy to resolve at
 feasible sampling. Per the 3-model consult (gpt-5.5 / glm-5.2 / deepseek), A+B are "necessary but
-not sufficient"; the sufficient part is not prompt-reachable here.
+not sufficient"; the sufficient part is not reachable by a RULE. (Corrected by [R1]: it IS
+reachable STRUCTURALLY.)
+
+---
+
+## [R1] RESEARCH: a structural record-only format DOES kill the drift — kept off production
+
+**Files:** `prompts/distiller-records.md` (research candidate; NOT wired into production —
+`selectVariant` still returns `third-person`).
+
+**Question after C12:** is the drift fixable by ANY prompt change, or model-bound? Round-2 consult
+(gpt-5.5 / glm-5.2 / deepseek) CONVERGED: a flat rule loses because it competes with the strong
+goal in the SAME semantic channel; the fix must be STRUCTURAL — a record-only schema
+(`<locator> = "<verbatim>"`) that leaves no grammatical slot for "should be removed". They also
+noted format+metric are a pair (verbatim records make the planning check near-exact, killing the
+judge's 1↔5 swing — glm: at sd≈2.0 you'd need ~60 reps/cell, which is why C12's rounds were
+inconclusive).
+
+**Built:** a judge-free deterministic planning-marker grep (`no-planning-grep`) + `distiller-
+records.md`.
+
+**Stage A (judge-free, 6 reps × 6 models) — DECISIVE:** planning-clean fraction baseline
+(= shipped restoreab) **0.17–0.67 → records 0.80–1.00** across every model. So the drift IS
+structurally prompt-reachable; restoreab's A+B did NOT fix it (deterministically confirmed).
+
+**Stage B (cost; records vs baseline, 3 models) — lower than feared:** answering
+(sufficient-to-answer) HOLDS (5/4/5); passthrough (real-edit-verbatim) = baseline (deepseek fails
+both identically — pre-existing); on a messy cargo-log records is BETTER on no-fabrication (4/5 vs
+baseline 2/5 — the format suppresses narrative injection). REAL COST: explicit contradiction
+synthesis weakens (contradiction-report opus 4/5 vs 5/5 — record-only juxtaposes both values but
+doesn't assert "they contradict"); and it can invent a `<locator>` label to fill the slot.
+
+**Decision: REJECTED for production, kept as reproducible research.** The drift is LOW-HARM (the
+A/B-consistency study showed it benign in practice — agent leads, recallCount=0, no downstream
+damage). Record-only is a RADICAL format change (synthesized note → quote ledger) whose everyday
+usefulness ("compress a 40KB log into one useful sentence") is unmeasured beyond 4 edge samples,
+with large blast radius. Flipping a converged production prompt to fix a low-harm drift at that
+risk is a bad trade. If the drift must be eliminated and the quote-ledger tradeoff is accepted,
+`distiller-records.md` is ready: wire `selectVariant → "records"`.
+
+**Net:** loop closed honestly — the drift is prompt-fixable (structurally, proven on hard
+deterministic data), the fix is on the shelf, and we chose not to pay its cost for a low-harm
+problem. restoreab (C12) remains production.
