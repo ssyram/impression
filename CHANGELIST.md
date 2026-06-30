@@ -562,4 +562,38 @@ risk is a bad trade. If the drift must be eliminated and the quote-ledger tradeo
 
 **Net:** loop closed honestly — the drift is prompt-fixable (structurally, proven on hard
 deterministic data), the fix is on the shelf, and we chose not to pay its cost for a low-harm
-problem. restoreab (C12) remains production.
+problem. restoreab (C12) remains production. (Superseded by [C13]: moodban shipped.)
+
+---
+
+## [C13] ship the mood-ban (best info-preserving drift-fix) — iteration winner
+
+**Files:** `prompts/distiller-third-person.md` (+8/-1 over C12: a present-tense / banned-mood
+faithfulness bullet + indicative-mood Grounded-conclusions). **Production prompt.**
+
+**Iteration (≤10, info-preserving incremental only — owner: deepseek tends to REWRITE and drop
+info; C11 dropping A+B was wholesale deepseek adoption; records dropped synthesis. So every
+candidate was diff-audited for dropped clauses.):**
+- ITER1 `moodban` = C12 + a banned-mood bullet (imperative/modal/future + non-source
+  classification adjectives banned in every section) + indicative Grounded-conclusions.
+  Pure-additive (audited).
+- ITER2 `hybrid` / ITER3 `hybrid2` = + quote-anchored descriptive sections (structural). These
+  KILL the drift fully (incl. opus-4-6) but reintroduce **locator-fabrication** (invent a
+  file:line to fill the records slot) — a HIGHER-harm fault than the low-harm drift. Rejected.
+
+**Method — the metric was the unlock (glm round-2 consult: at sd≈2.0 you need ~60 reps/cell):**
+the LLM-judge full-suite is NOISE-dominated at samples=1 (moodban showed opus-4-8 1.0→0.0 on 6
+samples, but the SUPERSET hybrid2 didn't — proving noise). A judge-free deterministic planning
+grep (`no-planning-grep`) carried the drift axis; alarming "regressions" were re-tested at 5 reps.
+
+**Result (5-rep, opus-4-8):** moodban's scary samples=1 drops were ALL noise — at 5 reps moodban
+EQUALS or BEATS baseline (garbled-bytes no-fab 3.6→4.0, truncated-input faithfulness 4.4→5.0,
+trap no-fab 4.6→5.0; real-edit-verbatim passthrough 5.0=5.0). Drift (deterministic, 6 reps):
+moodban lifts weak models (glm 0.67→1.0, deepseek 0.5→0.75, MiniMax 0.5→0.8); opus-4-6 still
+rephrases around a lexical ban (the residual the structural variants fix at the locator-fab cost);
+opus-4-8 already clean.
+
+**Why moodban over records/hybrid:** info-preserving + safe (noise-cleared) + reduces fabrication
+on messy inputs, with NO structural cost. The full drift-kill of records/hybrid isn't worth
+locator-fabrication for a low-harm, mostly-weak-model drift. `distiller-records.md` stays on the
+shelf (R1) if a full kill is ever demanded.

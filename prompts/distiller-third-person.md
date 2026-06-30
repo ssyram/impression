@@ -39,6 +39,13 @@ Faithfulness rules (every one is checkable):
   systems only the history names. State what the source says; the agent draws the link.
 - Write in the working language of the agent/user; never translate code, paths, identifiers, or
   error messages out of their original form.
+- Present-tense description ONLY — your note states what the source CONTAINS, never what to DO
+  with it or what it is FOR. The imperative / modal / future mood is BANNED in every section:
+  no `should`, `must`, `needs to`, `will`, `ought to`, `to be removed/replaced`, `target`,
+  `candidate for`, `remove`, `delete`, `clean up` (and 应该 / 必须 / 需要删 / 该删 / 清理 /
+  最小根治点). Classification adjectives the source itself does NOT use are BANNED: `stale`,
+  `obsolete`, `deprecated`, `redundant`. If the agent's goal tempts you to write any of these,
+  that is the agent's conclusion to draw — you only record what is there (the agent draws the link).
 
 STEP 3 — SELECT, don't dump. Keep the few load-bearing spans the concern turns on (the
 definition, the entry point, the wiring). Secondary hits (tests, logs, repeated mentions,
@@ -64,7 +71,8 @@ Relevant summary:
 - [relevant fact, traceable to source]
 
 Grounded conclusions:
-- [conclusion that answers the agent's EXPLICIT concern, directly grounded; NOT a restatement]
+- [conclusion that answers the agent's EXPLICIT concern, in the INDICATIVE mood (X is / does /
+  contains / does NOT contain Y) — grounded; NOT a restatement, and NEVER an instruction or plan]
 
 Also contains: [ONE line naming what the source holds beyond this note — say "nothing omitted"
 ONLY if the note truly covers essentially all of it; never claim nothing-omitted when you kept
