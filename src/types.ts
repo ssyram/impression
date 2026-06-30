@@ -5,6 +5,7 @@ export const IMPRESSION_ENTRY_TYPE = "impression-v1";
 export const PASSTHROUGH_MODE_ENTRY_TYPE = "impression-passthrough-mode";
 export const SESSION_STATS_ENTRY_TYPE = "impression-session-stats";
 export const IMPRESSION_CONFIG_ENTRY_TYPE = "impression-config-v1";
+export const DISTILL_LOG_ENTRY_TYPE = "impression-distill-log";
 export const DEFAULT_MIN_LENGTH = 2048;
 export const DEFAULT_MAX_RECALL = 1;
 export const DEFAULT_MAX_PASSTHROUGH_COUNT = 2;
@@ -80,6 +81,26 @@ export interface PassthroughModeEntry {
 export interface SessionStatsEntry {
 	originalChars: number;
 	impressionChars: number;
+}
+
+export type PassthroughReason = "sentinel" | "truncated" | "failing" | "empty";
+
+/**
+ * Auxiliary diagnostic log of one distill decision. Persisted as a custom session
+ * entry, on the SAME channel as impression-v1 / session-stats — metadata only,
+ * NEVER injected into the agent's LLM context. Lets passthrough be audited:
+ * genuine STEP-1 `sentinel` vs degenerate fallbacks (`truncated` / `failing` / `empty`).
+ */
+export interface DistillLogEntry {
+	toolCallId: string;
+	toolName: string;
+	passthrough: boolean;
+	passthroughReason?: PassthroughReason;
+	originalChars: number;
+	noteChars: number;
+	thinkingChars: number;
+	thinking?: string;
+	createdAt: number;
 }
 
 export function isPassthroughModeEntry(value: unknown): value is PassthroughModeEntry {

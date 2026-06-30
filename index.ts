@@ -17,8 +17,8 @@ import { formatOriginalCall } from "./src/format-call.js";
 import { getImpressionSystemAppendTemplate } from "./src/prompt-loader.js";
 import { buildImpressionText, createPassthroughToolResult, createRecallToolResult, notifyImpressionSkip } from "./src/result-builders.js";
 import { serializeContent } from "./src/serialize.js";
-import { CONFIG_FILE_NAME, IMPRESSION_CONFIG_ENTRY_TYPE, IMPRESSION_ENTRY_TYPE, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getImpressionConfigData, getPassthroughModeData, getSessionStatsData, isImpressionConfigPatch, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry } from "./src/types.js";
-import type { ImpressionConfig, ImpressionDetails, ImpressionEntry, ResolvedConfig } from "./src/types.js";
+import { CONFIG_FILE_NAME, DISTILL_LOG_ENTRY_TYPE, IMPRESSION_CONFIG_ENTRY_TYPE, IMPRESSION_ENTRY_TYPE, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getImpressionConfigData, getPassthroughModeData, getSessionStatsData, isImpressionConfigPatch, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry } from "./src/types.js";
+import type { DistillLogEntry, ImpressionConfig, ImpressionDetails, ImpressionEntry, ResolvedConfig } from "./src/types.js";
 
 const RecallImpressionParams = Type.Object({
 	id: Type.String({ description: "Impression ID" }),
@@ -492,7 +492,7 @@ export default function (pi: ExtensionAPI) {
 		const visibleHistory = getVisibleHistory(ctx);
 		const originalSystemPrompt = ctx.getSystemPrompt();
 		ctx.ui.setStatus("impression-distill", `[impression] Distilling ${fullText.length} chars with ${model.provider}/${model.id}...`);
-		let distillation: { passthrough: boolean; note: string; thinking?: string };
+		let distillation: Awaited<ReturnType<typeof distillWithSameModel>>;
 		try {
 			distillation = await distillWithSameModel(
 				model,
@@ -516,6 +516,17 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`[impression] Passthrough thinking: ${distillation.thinking}`, "warning");
 			}
 			recordImpressionData(fullText.length, fullText.length);
+			pi.appendEntry(DISTILL_LOG_ENTRY_TYPE, {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				passthrough: true,
+				passthroughReason: distillation.passthroughReason,
+				originalChars: fullText.length,
+				noteChars: fullText.length,
+				thinkingChars: distillation.thinking?.length ?? 0,
+				thinking: distillation.thinking,
+				createdAt: Date.now(),
+			} satisfies DistillLogEntry);
 			if (cfg.showData) {
 				ctx.ui.notify(formatImpressionData(fullText.length, fullText.length), "info");
 			}
@@ -538,6 +549,16 @@ export default function (pi: ExtensionAPI) {
 		const impression = newImpression(event, fullText);
 		impressions.set(impression.id, impression);
 		pi.appendEntry(IMPRESSION_ENTRY_TYPE, impression);
+		pi.appendEntry(DISTILL_LOG_ENTRY_TYPE, {
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			passthrough: false,
+			originalChars: fullText.length,
+			noteChars: impressionChars,
+			thinkingChars: distillation.thinking?.length ?? 0,
+			thinking: distillation.thinking,
+			createdAt: Date.now(),
+		} satisfies DistillLogEntry);
 
 		return {
 			content: [{ type: "text", text: buildImpressionText(impression.id, distillation.note) }],
@@ -640,7 +661,7 @@ export default function (pi: ExtensionAPI) {
 			const visibleHistory = getVisibleHistory(ctx);
 			const originalSystemPrompt = ctx.getSystemPrompt();
 			ctx.ui.setStatus("impression-distill", `[impression] Re-distilling ${impression.fullText.length} chars with ${model.provider}/${model.id}...`);
-			let distillation: { passthrough: boolean; note: string; thinking?: string };
+			let distillation: Awaited<ReturnType<typeof distillWithSameModel>>;
 			try {
 				distillation = await distillWithSameModel(
 					model,

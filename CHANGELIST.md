@@ -464,3 +464,60 @@ would ALSO be mismarked as compressions → the agent gets a compressed note whe
 verbatim = execution degradation on weaker models. This is a real robustness gap in
 distill.ts worth the same tolerance. Left for user decision per "测试好了最后我确定了再动
 impression 的机制" — the eval is fixed; the mechanism fix is proposed, not applied.
+
+---
+
+## [LOG1] distill: persist thinking + passthrough-reason as out-of-context auxiliary log
+
+**Files:** `src/types.ts`, `src/distill.ts`, `index.ts` (+52/-6)
+
+**Problem:** On passthrough, `index.ts` discarded `distillation.note` (which encodes WHY:
+genuine `<passthrough/>` sentinel vs degenerate fallbacks `truncated`/`failing`/`empty`), so a
+persisted session could not distinguish a deliberate STEP-1 passthrough from a compression
+FAILURE — grep of a real session for those markers = 0/0/0. The distiller's thinking was only
+surfaced ephemerally via `ctx.ui.notify` in debug mode, never archived. So the headline
+"passthrough rate" metric silently conflated "prompt working" with "model failed to compress".
+
+**Change:** added a `DistillLogEntry` custom session entry (`impression-distill-log`), appended
+on BOTH the passthrough and compress paths via `pi.appendEntry` — the SAME channel as
+impression-v1 / session-stats, which is metadata-only and NEVER injected into the agent's LLM
+context. Carries `{toolCallId, toolName, passthrough, passthroughReason, originalChars,
+noteChars, thinkingChars, thinking}`; full thinking kept (per user request). `distill.ts` now
+tags each passthrough return with a discriminated `passthroughReason`.
+
+**Proof:** minimal (+52/-6, 3 files); typecheck 0 errors in impression files (probe-validated —
+a planted type error fired, so the 0 is real); no entry-type registration needed (matches the 4
+existing custom-entry usages); never enters context (custom-entry channel, not returned content).
+
+---
+
+## [C12] restore concern-leak defense dropped in C11 (regression fix)
+
+**Files:** `prompts/distiller-third-person.md` (+4/-1)
+
+**Problem:** Mining a real run found a UNIVERSAL drift — under a strong history goal ("revoke
+autostart / clean up stale refs"), the note-taker stops describing the source and writes an EDIT
+PLAN ("removal target", "stale", "must delete"). Reproduced across all 6 models (every
+compressing model scored worst on the planning axis). Root cause traced via git: the C11
+procedural rewrite (`10f8e3b`) DROPPED two clauses present since C3:
+  - A: "…nor link it to systems only the history names. State what the source says; the agent
+       draws the link."
+  - B: "If visible_history already states a conclusion or plan, do NOT restate it — compress the
+       NEW result, not the conversation."
+
+**Change:** restored both — A into the concern-leak faithfulness bullet, B into STEP 3 SELECT.
+
+**Bake-off (2 rounds, weak+strong, judge-k 3, multi-sample):**
+- A 3rd candidate `stranger` (A+B + a positive "write as to a stranger / division-of-labor" rule
+  + grounded-absence guardrail) was REJECTED — no improvement, slightly worse on weak models.
+- `restoreab` (A+B only) is SAFE: regression guards equal to baseline — contradiction-report
+  5/5=5/5, empty-error-result 5/5=5/5, real-edit-verbatim passthrough 5/5=5/5, history-no-restate
+  4/5≈4/5. The guardrail concern (suppressing grounded answers / absence) did NOT materialize.
+- Drift axes: INCONCLUSIVE / noise-dominated (per-rep planning score swings 1↔5, sd≈2.0).
+  restoreab helps opus-4-8 (1.67→3.0) and deepseek (1.0→3.0), neutral-to-noisy elsewhere.
+
+**Honest framing:** ships as a REGRESSION FIX (restore a sound rule C11 wrongly dropped) that is
+proven SAFE and helps the production model — NOT as a proven universal drift-fix. The planning
+drift under a strong goal is largely a MODEL-level trait the metric is too noisy to resolve at
+feasible sampling. Per the 3-model consult (gpt-5.5 / glm-5.2 / deepseek), A+B are "necessary but
+not sufficient"; the sufficient part is not prompt-reachable here.

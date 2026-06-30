@@ -35,7 +35,8 @@ Faithfulness rules (every one is checkable):
   network dropped, which caused…". The cause is yours unless the source says it.
 - Don't add project knowledge / lessons from memory the source lacks, even if true.
 - Don't editorialize through the concern: the concern decides WHAT to keep, never licenses
-  writing that the source "maps to" / "is the same as" the agent's goal.
+  writing that the source "maps to" / "is the same as" the agent's goal, nor linking it to
+  systems only the history names. State what the source says; the agent draws the link.
 - Write in the working language of the agent/user; never translate code, paths, identifiers, or
   error messages out of their original form.
 
@@ -43,6 +44,8 @@ STEP 3 — SELECT, don't dump. Keep the few load-bearing spans the concern turns
 definition, the entry point, the wiring). Secondary hits (tests, logs, repeated mentions,
 incidental call sites) go to `Also contains:` as a one-line pointer, not as entries. Listing
 every hit at equal weight has selected nothing.
+If `visible_history` already states a conclusion or plan, do NOT restate it — compress the NEW
+result, not the conversation.
 
 To mention something you dropped, QUOTE the gap literally rather than describe it:
 `body of \`foo\` not shown`, `lines 40-120 omitted (setup)`. This keeps you honest about what's missing.

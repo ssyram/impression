@@ -2,7 +2,7 @@ import { type Api, complete, type ImageContent, type Model, type TextContent } f
 import { DISTILLER_SENTINEL } from "./types.js";
 import { serializeContent } from "./serialize.js";
 import { getDistillerSystemPrompt, getDistillerUserTemplate, renderTemplate } from "./prompt-loader.js";
-import type { PromptVariant } from "./types.js";
+import type { PromptVariant, PassthroughReason } from "./types.js";
 
 /**
  * Model ID prefixes whose models can maintain identity framing without
@@ -37,7 +37,7 @@ export async function distillWithSameModel(
 	maxTokens: number,
 	signal?: AbortSignal,
 	onPromptVersion?: (version: string) => void,
-): Promise<{ passthrough: boolean; note: string; thinking?: string }> {
+): Promise<{ passthrough: boolean; note: string; thinking?: string; passthroughReason?: PassthroughReason }> {
 	const variant = resolveVariant(model, debugDistillMode);
 	if (onPromptVersion) onPromptVersion(variant);
 
@@ -86,6 +86,7 @@ export async function distillWithSameModel(
 		return {
 			passthrough: true,
 			note: `[DISTILLATION TRUNCATED — output hit max_tokens=${maxTokens}; falling back to passthrough]`,
+			passthroughReason: "truncated",
 		};
 	}
 
@@ -115,6 +116,7 @@ export async function distillWithSameModel(
 			passthrough: true,
 			note: DISTILLER_SENTINEL,
 			thinking,
+			passthroughReason: "empty",
 		};
 	}
 
@@ -128,6 +130,7 @@ export async function distillWithSameModel(
 			passthrough: true,
 			note: strippedText,
 			thinking,
+			passthroughReason: "sentinel",
 		};
 	}
 	if (strippedText.length >= contentText.length) {
@@ -135,6 +138,7 @@ export async function distillWithSameModel(
 			passthrough: true,
 			note: "[FAILING DISTILLATION: " + strippedText.length + " >= " + contentText.length + "]" + strippedText,
 			thinking,
+			passthroughReason: "failing",
 		};
 	}
 	return {
