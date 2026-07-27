@@ -1,4 +1,5 @@
-import { type Api, complete, type ImageContent, type Model, type TextContent } from "@earendil-works/pi-ai";
+import { type Api, type ImageContent, type Model, type TextContent } from "@earendil-works/pi-ai";
+import { complete } from "@earendil-works/pi-ai/compat";
 import { DISTILLER_SENTINEL } from "./types.js";
 import { serializeContent } from "./serialize.js";
 import { getDistillerSystemPrompt, getDistillerUserTemplate, renderTemplate } from "./prompt-loader.js";
