@@ -155,6 +155,19 @@ describe("createCommandArgumentProvider", () => {
 		assert.deepEqual(result.lines, ["/impression set  tail"]);
 	});
 
+	it("claims the Tab gate for its own argument positions", () => {
+		// Regression: the built-in gate trims the line, so `/impression ` reads as a
+		// bare command still being typed and Tab drops the request entirely.
+		const { current } = makeCurrent();
+		const gated = createCommandArgumentProvider(
+			{ ...current, shouldTriggerFileCompletion: () => false },
+			{ command: "impression", complete },
+		);
+		assert.equal(gated.shouldTriggerFileCompletion?.(["/impression "], 0, 12), true);
+		assert.equal(gated.shouldTriggerFileCompletion?.(["/impression set "], 0, 16), true);
+		assert.equal(gated.shouldTriggerFileCompletion?.(["/impression"], 0, 11), false);
+	});
+
 	it("delegates an item it did not offer", () => {
 		const { current, calls } = makeCurrent();
 		provider(current).applyCompletion(["/impression se"], 0, 14, { value: "/etc/", label: "etc/" }, "se");
