@@ -52,8 +52,6 @@ export async function distillWithSameModel(
 				: "";
 
 	const systemPrompt = renderTemplate(getDistillerSystemPrompt(variant), {
-		contentLength: String(contentText.length),
-		lengthNote,
 		sentinel: DISTILLER_SENTINEL,
 	});
 
@@ -62,6 +60,8 @@ export async function distillWithSameModel(
 		visibleHistory: visibleHistory || "[none]",
 		toolName,
 		toolResult: contentText || "[empty]",
+		contentLength: String(contentText.length),
+		lengthNote,
 	});
 
 	const response = await complete(
