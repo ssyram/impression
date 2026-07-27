@@ -17,6 +17,7 @@ import { formatOriginalCall } from "./src/format-call.js";
 import { getImpressionSystemAppendTemplate } from "./src/prompt-loader.js";
 import { buildImpressionText, createPassthroughToolResult, createRecallToolResult, notifyImpressionSkip } from "./src/result-builders.js";
 import { serializeContent } from "./src/serialize.js";
+import { type ArgumentCandidate, createCommandArgumentProvider } from "./src/tab-complete.js";
 import { CONFIG_FILE_NAME, DISTILL_LOG_ENTRY_TYPE, IMPRESSION_CONFIG_ENTRY_TYPE, IMPRESSION_ENTRY_TYPE, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getImpressionConfigData, getPassthroughModeData, getSessionStatsData, isImpressionConfigPatch, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry } from "./src/types.js";
 import type { DistillLogEntry, ImpressionConfig, ImpressionDetails, ImpressionEntry, ResolvedConfig } from "./src/types.js";
 
@@ -231,22 +232,55 @@ function clampNumeric(def: ConfigKeyDef, value: unknown): { value: unknown; warn
 	return { value };
 }
 
+/** One entry per behaviour — the menu and the help text are both built from this. */
+const IMPRESSION_SUBCOMMANDS: { value: string; alias?: string; description: string }[] = [
+	{ value: "status", alias: "s", description: "Print current session config" },
+	{ value: "help", alias: "h", description: "Show this help" },
+	{ value: "on", description: "Shorthand for `set Enabled true`" },
+	{ value: "off", description: "Shorthand for `set Enabled false`" },
+	{ value: "load", description: "Re-read .pi/impression.json into the session as a patch" },
+	{ value: "set", description: "Set one config field: set [--persistent] NAME VALUE" },
+];
+
 const IMPRESSION_HELP = [
-	"/impression — view or change session config.",
-	"  /impression                       Print current session config.",
-	"  /impression config|print|read    Same as above.",
-	"  /impression help|-h|--help|?     Show this help.",
-	"  /impression on                    Shorthand for `set Enabled true`.",
-	"  /impression off                   Shorthand for `set Enabled false`.",
-	"  /impression load                  Re-read .pi/impression.json into the session as a patch.",
-	"  /impression set [--persistent] NAME VALUE",
-	"                                    Set one config field. NAME is case- and separator-insensitive",
-	"                                    (Enabled, enabled, max-recall, max_recall, \"max recall\" all work).",
-	"                                    VALUE is JSON; type-checked against the field.",
-	"                                    --persistent also writes back to .pi/impression.json.",
+	"/impression — view or change session config. Bare /impression shows this help.",
+	...IMPRESSION_SUBCOMMANDS.map((c) => {
+		const invocation = `  /impression ${c.value}${c.alias ? ` | ${c.alias}` : ""}`;
+		return `${invocation.padEnd(36)}${c.description}.`;
+	}),
+	"                                    NAME is case- and separator-insensitive (Enabled, enabled,",
+	"                                    max-recall, max_recall, \"max recall\" all work); VALUE is JSON,",
+	"                                    type-checked against the field. --persistent also writes back",
+	"                                    to .pi/impression.json.",
 	"  /impression tool1,tool2,...       Append tools to SkipDistillation for this session.",
+	"Tab after `/impression ` lists subcommands; after `set ` it lists field names.",
 	"Known fields: " + CONFIG_KEY_DEFS.map((d) => d.display).join(", "),
 ].join("\n");
+
+/** Candidates for `/impression <Tab>` and `/impression set <Tab>`. */
+function completeImpressionArgument(previousTokens: string[]): ArgumentCandidate[] | null {
+	if (previousTokens.length === 0) {
+		return IMPRESSION_SUBCOMMANDS.map((c) => ({
+			value: c.value,
+			description: c.alias ? `${c.description} (alias: ${c.alias})` : c.description,
+		}));
+	}
+
+	if (previousTokens[0]?.toLowerCase() !== "set") return null;
+
+	const fields: ArgumentCandidate[] = CONFIG_KEY_DEFS.map((d) => ({ value: d.display, description: d.type }));
+	const afterSet = previousTokens.slice(1);
+	if (afterSet.length === 0) {
+		return [
+			{ value: "--persistent", description: "also write the change to .pi/impression.json" },
+			...fields,
+		];
+	}
+	if (afterSet.length === 1 && afterSet[0]?.toLowerCase() === "--persistent") return fields;
+
+	// Value position: nothing sensible to offer, let the underlying provider have it.
+	return null;
+}
 
 function parseSetBody(body: string): { name: string; value: string } | null {
 	const match = body.match(/^(?:"([^"]*)"|'([^']*)'|(\S+))\s+(.+)$/);
@@ -347,6 +381,11 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Autocomplete wrappers are dropped on /reload, so re-register every session.
+		ctx.ui.addAutocompleteProvider((current) =>
+			createCommandArgumentProvider(current, { command: "impression", complete: completeImpressionArgument }),
+		);
+
 		const loaded = loadConfig();
 		currentRaw = loaded.config;
 		// Surface parse errors from .pi/impression.json or the global config — file
@@ -817,12 +856,15 @@ export default function (pi: ExtensionAPI) {
 		async handler(args, ctx) {
 			const trimmed = args.trim();
 			const lower = trimmed.toLowerCase();
-			if (!lower || lower === "config" || lower === "print" || lower === "read") {
-				ctx.ui.notify(`[impression] Session config:\n${JSON.stringify(cfg, null, 2)}`, "info");
+			// Bare /impression shows usage; the config dump lives behind `status`.
+			// The dashed and legacy spellings still resolve, they are just no longer
+			// advertised — one name (plus one abbreviation) per behaviour.
+			if (!lower || lower === "help" || lower === "h" || lower === "?" || lower === "-h" || lower === "--help") {
+				ctx.ui.notify(IMPRESSION_HELP, "info");
 				return;
 			}
-			if (lower === "help" || lower === "-h" || lower === "--help" || lower === "?") {
-				ctx.ui.notify(IMPRESSION_HELP, "info");
+			if (lower === "status" || lower === "s" || lower === "config" || lower === "print" || lower === "read") {
+				ctx.ui.notify(`[impression] Session config:\n${JSON.stringify(cfg, null, 2)}`, "info");
 				return;
 			}
 			if (lower === "on") {
