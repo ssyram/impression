@@ -530,24 +530,19 @@ export default function (pi: ExtensionAPI) {
 		}
 		const visibleHistory = getVisibleHistory(ctx);
 		const originalSystemPrompt = ctx.getSystemPrompt();
-		ctx.ui.setStatus("impression-distill", `[impression] Distilling ${fullText.length} chars with ${model.provider}/${model.id}...`);
-		let distillation: Awaited<ReturnType<typeof distillWithSameModel>>;
-		try {
-			distillation = await distillWithSameModel(
-				model,
-				cfg.debugDistillMode,
-				{ apiKey: auth.apiKey, headers: auth.headers },
-				event.toolName,
-				event.content,
-				visibleHistory,
-				originalSystemPrompt,
-				computeDistillMaxTokens(fullText.length, model, cfg),
-				ctx.signal,
-				cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
-			);
-		} finally {
-			ctx.ui.setStatus("impression-distill", undefined);
-		}
+		ctx.ui.notify(`[impression] Distilling ${fullText.length} chars with ${model.provider}/${model.id}...`, "info");
+		const distillation = await distillWithSameModel(
+			model,
+			cfg.debugDistillMode,
+			{ apiKey: auth.apiKey, headers: auth.headers },
+			event.toolName,
+			event.content,
+			visibleHistory,
+			originalSystemPrompt,
+			computeDistillMaxTokens(fullText.length, model, cfg),
+			ctx.signal,
+			cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
+		);
 
 		const ptLevel = cfg.debug ? "warning" : "info";
 		if (distillation.passthrough) {
@@ -699,24 +694,19 @@ export default function (pi: ExtensionAPI) {
 			}
 			const visibleHistory = getVisibleHistory(ctx);
 			const originalSystemPrompt = ctx.getSystemPrompt();
-			ctx.ui.setStatus("impression-distill", `[impression] Re-distilling ${impression.fullText.length} chars with ${model.provider}/${model.id}...`);
-			let distillation: Awaited<ReturnType<typeof distillWithSameModel>>;
-			try {
-				distillation = await distillWithSameModel(
-					model,
-					cfg.debugDistillMode,
-					{ apiKey: auth.apiKey, headers: auth.headers },
-					impression.toolName,
-					impression.fullContent,
-					visibleHistory,
-					originalSystemPrompt,
-					computeDistillMaxTokens(impression.fullText.length, model, cfg),
-					signal,
-					cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
-				);
-			} finally {
-				ctx.ui.setStatus("impression-distill", undefined);
-			}
+			ctx.ui.notify(`[impression] Re-distilling ${impression.fullText.length} chars with ${model.provider}/${model.id}...`, "info");
+			const distillation = await distillWithSameModel(
+				model,
+				cfg.debugDistillMode,
+				{ apiKey: auth.apiKey, headers: auth.headers },
+				impression.toolName,
+				impression.fullContent,
+				visibleHistory,
+				originalSystemPrompt,
+				computeDistillMaxTokens(impression.fullText.length, model, cfg),
+				signal,
+				cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
+			);
 
 			const ptLevel = cfg.debug ? "warning" : "info";
 			if (distillation.passthrough) {
