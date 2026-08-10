@@ -9,7 +9,7 @@ import type { ImpressionConfig, ResolvedConfig } from "./types.js";
 export function resolveConfig(raw: ImpressionConfig): ResolvedConfig {
 	return {
 		debugDistillMode: raw["debug:distill-mode"],
-		skipDistillation: raw.skipDistillation ?? [],
+		skipDistillation: raw.skipDistillation ?? {},
 		minLength: raw.minLength ?? DEFAULT_MIN_LENGTH,
 		maxRecall: raw.maxRecallBeforePassthrough ?? DEFAULT_MAX_RECALL,
 		maxPassthroughCount: raw.maxPassthroughCount ?? DEFAULT_MAX_PASSTHROUGH_COUNT,
@@ -86,22 +86,4 @@ export async function saveLocalConfig(patch: Partial<ImpressionConfig>): Promise
 		await unlink(tmp).catch(() => {});
 		throw err;
 	}
-}
-
-export function shouldSkipDistillation(toolName: string, config: ResolvedConfig): boolean {
-	const patterns = config.skipDistillation;
-	if (patterns.length === 0) return false;
-	for (const pattern of patterns) {
-		if (pattern.length >= 2 && pattern.startsWith("/") && pattern.endsWith("/")) {
-			try {
-				if (new RegExp(pattern.slice(1, -1)).test(toolName)) return true;
-			} catch {
-				// invalid regex — fall through to other matchers
-			}
-			continue;
-		}
-		if (pattern === toolName) return true;
-		if (pattern.endsWith("*") && toolName.startsWith(pattern.slice(0, -1))) return true;
-	}
-	return false;
 }

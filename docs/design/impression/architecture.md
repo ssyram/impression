@@ -15,7 +15,8 @@ impression/
 ├── index.ts                          # Extension entry — events, tools, command, all factory state
 └── src/
     ├── types.ts                      # Custom-entry constants, ImpressionConfig / ResolvedConfig / ImpressionEntry shapes, type guards
-    ├── config.ts                     # File load + parse-error reporting + resolveConfig + saveLocalConfig + skip-pattern matcher
+    ├── config.ts                     # File load + parse-error reporting + resolveConfig + saveLocalConfig
+    ├── should-skip-distillation.ts   # Input-aware automatic passthrough matcher
     ├── distill.ts                    # Single-shot LLM call: build prompts, stream, detect <passthrough/> sentinel
     ├── prompt-loader.ts              # Lazy-cached load of prompts/*.md + {{var}} template substitution
     ├── result-builders.ts            # Build the AgentToolResult payloads returned to the framework
@@ -171,10 +172,13 @@ saveLocalConfig(patch): Promise<void>
                full Rely-Guarantee statement.
   Side:  filesystem write to <cwd>/.pi/impression.json
 
-shouldSkipDistillation(toolName, config): boolean
-  Pre:  toolName is a string; config.skipDistillation is string[]
-  Ensures: returns true iff some pattern matches by exact / trailing-* glob /
-           /regex/ wrapped pattern; never throws (invalid regex caught)
+shouldSkipDistillation(toolName, toolInput, rules): boolean
+  Pre:  toolName is a string; toolInput is an optional input record;
+        rules maps exact tool names to string conditions
+  Ensures: returns true iff toolName has a rule and every condition matches a
+           string input value by exact equality or /regex/ pattern; an empty
+           condition object matches every call; missing, non-string, and
+           invalid-regex conditions do not match and never throw
   Side:  none
 
 resolveConfig(raw): ResolvedConfig
@@ -244,8 +248,8 @@ applyConfigPatch(patch)                     (index.ts ~line 337)
          description re-embeds the new cfg.maxPassthroughCount /
          getPassthroughHardLimit(cfg)).
     `safe` is `patch` with `skipDistillation` (if present) defensively
-    shallow-copied so subsequent caller mutations of the array do not
-    leak into the JSONL entry / currentRaw.
+    copied at both map levels so subsequent caller mutations do not leak into
+    the JSONL entry / currentRaw.
     On appendEntry throw: currentRaw / cfg are unchanged AND the
     skip_impression tool registration is unchanged. The caller observes
     the throw; in-memory state stays consistent with the JSONL log.

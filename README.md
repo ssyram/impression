@@ -79,7 +79,8 @@ impression/
 ├── index.ts                  # Extension entry point (wires events + tool)
 ├── src/
 │   ├── types.ts              # Interfaces, type guards, constants
-│   ├── config.ts             # Config loading, resolution, skip-pattern matching
+│   ├── config.ts             # Config loading and resolution
+│   ├── should-skip-distillation.ts # Input-aware automatic passthrough matching
 │   ├── serialize.ts          # Content serialization (text + images)
 │   ├── prompt-loader.ts      # Loads and templates prompt files
 │   ├── distill.ts            # Distillation logic (calls LLM)
@@ -109,7 +110,10 @@ Create `.pi/impression.json` in your project root (optional — all fields have 
   "enabled": true,
   "debug": false,
   "debug:distill-mode": "third-person",
-  "skipDistillation": [],
+  "skipDistillation": {
+    "try_load_skill_or_prompt": {},
+    "subagent": { "action": "list" }
+  },
   "minLength": 2048,
   "maxRecallBeforePassthrough": 1,
   "maxPassthroughCount": 2,
@@ -123,7 +127,7 @@ Create `.pi/impression.json` in your project root (optional — all fields have 
 | `enabled` | `boolean` | `true` | Master switch. When `false`, all tool results pass through without distillation. |
 | `debug` | `boolean` | `false` | Enables debug notifications and debug-only options. |
 | `debug:distill-mode` | `"first-person" \| "third-person"` | unset | Debug override for distiller prompt mode. Works only when `debug: true`; otherwise it is ignored with a warning. |
-| `skipDistillation` | `string[]` | `[]` | Tool names to never distill. Each pattern is matched as: (1) exact match (`"bash"`); (2) glob — only **trailing** `*` is supported (`"background_*"` matches anything starting with `background_`); (3) regex — wrap the pattern in `/.../` (e.g. `"/^read.*_file$/"` for full regex semantics). |
+| `skipDistillation` | `Record<string, Record<string, string>>` | `{}` | Tool names mapped to input conditions that must match before passthrough. A tool with `{}` always passes through; every non-empty condition must find a string input value and match it. Plain patterns use exact equality; `/.../` patterns are JavaScript regular expressions (for example, `{ "subagent": { "action": "/^(list|status)$/" } }`). Missing, non-string, or invalid-regex conditions do not match. |
 | `minLength` | `number` | `2048` | Minimum text length (chars) to trigger distillation. |
 | `maxRecallBeforePassthrough` | `number` | `1` | Recalls returning re-distilled notes before switching to full passthrough. **`0` means every recall delivers the full content immediately** — useful when you want the agent to always get exact text after the initial distillation. |
 | `maxPassthroughCount` | `number` | `2` | Hard cap on `skip_impression count=N`. |
@@ -159,11 +163,11 @@ All subcommands and the `--persistent` flag are case-insensitive.
 | `/impression off` | Shorthand for `set Enabled false`. |
 | `/impression load` | Re-read `.pi/impression.json` and overlay it into the running session. |
 | `/impression set [--persistent] NAME VALUE` | Set one config field. `VALUE` is parsed as JSON; type-checked against the field. With `--persistent`, the patch is also written back to `.pi/impression.json` (in the background; a warning is shown if the write fails). |
-| `/impression tool1,tool2,...` | Shorthand: append the listed tools to `SkipDistillation` for this session. **Requires a comma** (or quoting) — single bare words are treated as unknown subcommands. |
+| `/impression tool1,tool2,...` | Shorthand: add empty `SkipDistillation` conditions for the listed tools, so every call to each tool passes through for this session. **Requires a comma** (or quoting) — single bare words are treated as unknown subcommands. |
 
 **Field naming**: `NAME` is matched case- and separator-insensitively. After lowercasing and stripping all non-alphanumerics, the input is looked up against both the JSON-file keys and the PascalCase display names. All of `MaxRecall`, `maxRecall`, `max-recall`, `max_recall`, `"max recall"`, `max:recall`, `maxrecall`, and `maxRecallBeforePassthrough` resolve to the same field. Display names (used in notifications and help) are PascalCase: `Enabled`, `Debug`, `ShowData`, `MinLength`, `MaxRecall`, `MaxPassthroughCount`, `SkipDistillation`, `DebugDistillMode`.
 
-**Value typing**: `enabled` / `debug` / `showData` → boolean; length / rate fields → finite number; `skipDistillation` → JSON array of strings (e.g. `["read","write"]`); `debug:distill-mode` → `"first-person"` or `"third-person"`. Mismatched values are rejected with an explanation.
+**Value typing**: `enabled` / `debug` / `showData` → boolean; length / rate fields → finite number; `skipDistillation` → JSON object from exact tool names to objects of string input patterns (e.g. `{ "read": {}, "subagent": { "action": "list" } }`); `debug:distill-mode` → `"first-person"` or `"third-person"`. Mismatched values are rejected with an explanation.
 
 > An unknown subcommand prints a warning that includes the command help, so a typo is never silently accepted.
 

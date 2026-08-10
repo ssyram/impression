@@ -79,7 +79,8 @@ impression/
 ├── index.ts                  # 扩展入口（连接事件与工具）
 ├── src/
 │   ├── types.ts              # 接口、类型守卫、常量
-│   ├── config.ts             # 配置加载、解析、skip pattern 匹配
+│   ├── config.ts             # 配置加载与解析
+│   ├── should-skip-distillation.ts # 按输入匹配自动 passthrough
 │   ├── serialize.ts          # 内容序列化（文本 + 图片）
 │   ├── prompt-loader.ts      # 加载并填充 prompt 模板
 │   ├── distill.ts            # 蒸馏逻辑（调用 LLM）
@@ -109,7 +110,10 @@ impression/
   "enabled": true,
   "debug": false,
   "debug:distill-mode": "third-person",
-  "skipDistillation": [],
+  "skipDistillation": {
+    "try_load_skill_or_prompt": {},
+    "subagent": { "action": "list" }
+  },
   "minLength": 2048,
   "maxRecallBeforePassthrough": 1,
   "maxPassthroughCount": 2,
@@ -123,7 +127,7 @@ impression/
 | `enabled` | `boolean` | `true` | 总开关。`false` 时所有工具结果不被蒸馏，直接透传。 |
 | `debug` | `boolean` | `false` | 开启调试通知与调试用选项。 |
 | `debug:distill-mode` | `"first-person" \| "third-person"` | 未设置 | 调试用，强制 distiller 使用某一种 prompt 模式。仅在 `debug: true` 时生效，否则被忽略并给出警告。 |
-| `skipDistillation` | `string[]` | `[]` | 永不蒸馏的工具名。每个 pattern 按下列规则匹配：(1) 精确匹配（`"bash"`）；(2) glob——只支持**尾部** `*` 通配（`"background_*"` 匹配以 `background_` 开头的）；(3) 正则——把整个 pattern 用 `/.../` 包起来（如 `"/^read.*_file$/"` 走完整正则语义）。 |
+| `skipDistillation` | `Record<string, Record<string, string>>` | `{}` | 工具名到输入条件的映射；全部条件匹配时才透传。工具条件为 `{}` 时，所有调用均透传；非空条件要求对应输入存在且为字符串。普通 pattern 精确相等；`/…/` 是 JavaScript 正则（例如 `{ "subagent": { "action": "/^(list|status)$/" } }`）。缺少参数、参数非字符串或正则无效时均不匹配。 |
 | `minLength` | `number` | `2048` | 触发蒸馏所需的最小文本长度（字符数）。 |
 | `maxRecallBeforePassthrough` | `number` | `1` | 切换为完整透传前，召回时返回"重新蒸馏笔记"的最大次数。**`0` 表示每次召回都直接给完整原文** —— 当你希望 agent 在初次蒸馏后总是拿到精确文本时用这个。 |
 | `maxPassthroughCount` | `number` | `2` | `skip_impression count=N` 的硬上限。 |
@@ -157,11 +161,11 @@ impression/
 | `/impression off` | 等价于 `set Enabled false`。 |
 | `/impression load` | 重新读取 `.pi/impression.json`，并把内容作为 patch 叠加到当前会话。 |
 | `/impression set [--persistent] NAME VALUE` | 在当前会话中设置某一字段。`VALUE` 按 JSON 解析并按字段类型校验。带 `--persistent` 时还会把改动写回 `.pi/impression.json`（**后台异步**写入，失败会通过 warning 通知）。 |
-| `/impression tool1,tool2,...` | 简写：把列出的工具名追加到本会话的 `SkipDistillation`。**必须带逗号**（或用引号），单个裸词被视为未知子命令。 |
+| `/impression tool1,tool2,...` | 简写：为列出的工具添加空 `SkipDistillation` 条件，使本会话中这些工具的所有调用都透传。**必须带逗号**（或用引号），单个裸词被视为未知子命令。 |
 
 **字段名匹配**：`NAME` 大小写、分隔符不敏感。匹配方法是：lowercase 并去掉所有非字母数字字符，然后既比对 JSON 文件键也比对 PascalCase 显示名。`MaxRecall` / `maxRecall` / `max-recall` / `max_recall` / `"max recall"` / `max:recall` / `maxrecall` / `maxRecallBeforePassthrough` 都解析到同一字段。显示名（用于通知和帮助文本）一律 PascalCase：`Enabled`、`Debug`、`ShowData`、`MinLength`、`MaxRecall`、`MaxPassthroughCount`、`SkipDistillation`、`DebugDistillMode`。
 
-**值类型校验**：`enabled` / `debug` / `showData` → 布尔；长度 / 比例字段 → 有限数字；`skipDistillation` → 字符串数组的 JSON 字面量（例：`["read","write"]`）；`debug:distill-mode` → `"first-person"` 或 `"third-person"`。类型不匹配直接拒绝并给出原因。
+**值类型校验**：`enabled` / `debug` / `showData` → 布尔；长度 / 比例字段 → 有限数字；`skipDistillation` → 从精确工具名到字符串输入 pattern 对象的 JSON 映射（例：`{ "read": {}, "subagent": { "action": "list" } }`）；`debug:distill-mode` → `"first-person"` 或 `"third-person"`。类型不匹配直接拒绝并给出原因。
 
 > 未知子命令会打印 warning 并附上完整命令帮助，不会静默吞下拼错的命令。
 

@@ -11,14 +11,15 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { loadConfig, resolveConfig, saveLocalConfig, shouldSkipDistillation } from "./src/config.js";
+import { loadConfig, resolveConfig, saveLocalConfig } from "./src/config.js";
 import { distillWithSameModel } from "./src/distill.js";
 import { formatOriginalCall } from "./src/format-call.js";
 import { getImpressionSystemAppendTemplate } from "./src/prompt-loader.js";
 import { buildImpressionText, createPassthroughToolResult, createRecallToolResult, notifyImpressionSkip } from "./src/result-builders.js";
 import { serializeContent } from "./src/serialize.js";
 import { type ArgumentCandidate, createCommandArgumentProvider } from "./src/tab-complete.js";
-import { CONFIG_FILE_NAME, DISTILL_LOG_ENTRY_TYPE, IMPRESSION_CONFIG_ENTRY_TYPE, IMPRESSION_ENTRY_TYPE, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getImpressionConfigData, getPassthroughModeData, getSessionStatsData, isImpressionConfigPatch, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry } from "./src/types.js";
+import { shouldSkipDistillation } from "./src/should-skip-distillation.js";
+import { CONFIG_FILE_NAME, DISTILL_LOG_ENTRY_TYPE, IMPRESSION_CONFIG_ENTRY_TYPE, IMPRESSION_ENTRY_TYPE, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getImpressionConfigData, getPassthroughModeData, getSessionStatsData, isImpressionConfigPatch, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry, isSkipDistillationRules } from "./src/types.js";
 import type { DistillLogEntry, ImpressionConfig, ImpressionDetails, ImpressionEntry, ResolvedConfig } from "./src/types.js";
 
 const RecallImpressionParams = Type.Object({
@@ -127,7 +128,7 @@ function parseToolNameList(input: string): string[] {
 	return names;
 }
 
-type ConfigValueKind = "boolean" | "number" | "string-array" | "distill-mode";
+type ConfigValueKind = "boolean" | "number" | "rule-map" | "distill-mode";
 
 interface ConfigKeyDef {
 	key: keyof ImpressionConfig;
@@ -145,7 +146,7 @@ const CONFIG_KEY_DEFS: ConfigKeyDef[] = [
 	{ key: "maxRecallBeforePassthrough", display: "MaxRecall", type: "number", min: 0 },
 	{ key: "maxPassthroughCount", display: "MaxPassthroughCount", type: "number", min: 0 },
 	{ key: "distillRateFloor", display: "DistillRateFloor", type: "number", min: 0 },
-	{ key: "skipDistillation", display: "SkipDistillation", type: "string-array" },
+	{ key: "skipDistillation", display: "SkipDistillation", type: "rule-map" },
 	{ key: "debug:distill-mode", display: "DebugDistillMode", type: "distill-mode" },
 ];
 
@@ -175,10 +176,10 @@ function validateConfigValue(def: ConfigKeyDef, value: unknown): string | null {
 			return typeof value === "boolean" ? null : `${def.display} must be a boolean (true / false)`;
 		case "number":
 			return typeof value === "number" && Number.isFinite(value) ? null : `${def.display} must be a finite number`;
-		case "string-array":
-			return Array.isArray(value) && value.every((x) => typeof x === "string")
+		case "rule-map":
+			return isSkipDistillationRules(value)
 				? null
-				: `${def.display} must be a JSON array of strings, e.g. ["read","write"]`;
+				: `${def.display} must be a JSON object of tool names to string parameter patterns, e.g. {"read":{},"subagent":{"action":"list"}}`;
 		case "distill-mode":
 			return value === "first-person" || value === "third-person"
 				? null
@@ -369,8 +370,13 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function applyConfigPatch(patch: Partial<ImpressionConfig>): void {
-		const safe = Array.isArray(patch.skipDistillation)
-			? { ...patch, skipDistillation: [...patch.skipDistillation] }
+		const safe = patch.skipDistillation
+			? {
+				...patch,
+				skipDistillation: Object.fromEntries(
+					Object.entries(patch.skipDistillation).map(([toolName, conditions]) => [toolName, { ...conditions }]),
+				),
+			}
 			: patch;
 		// disk-first: if appendEntry throws, in-memory cfg/currentRaw remain consistent
 		// with the JSONL log, and the next session_start will replay the same state.
@@ -503,7 +509,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 		}
-		if (shouldSkipDistillation(event.toolName, cfg)) {
+		if (shouldSkipDistillation(event.toolName, event.input, cfg.skipDistillation)) {
 			ctx.ui.notify(`[impression] Skipped distillation for "${event.toolName}" (configured in ${CONFIG_FILE_NAME})`, "info");
 			return;
 		}
@@ -961,11 +967,12 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(`[impression] Could not parse tool names from: ${trimmed}\n${IMPRESSION_HELP}`, "warning");
 					return;
 				}
-				const existing = new Set(cfg.skipDistillation);
-				for (const name of names) existing.add(name);
-				const merged = [...existing];
+				const merged = { ...cfg.skipDistillation };
+				for (const name of names) {
+					if (!merged[name]) merged[name] = {};
+				}
 				applyConfigPatch({ skipDistillation: merged });
-				ctx.ui.notify(`[impression] SkipDistillation updated: ${merged.join(", ")}`, "info");
+				ctx.ui.notify(`[impression] SkipDistillation updated: ${Object.keys(merged).join(", ")}`, "info");
 				return;
 			}
 			ctx.ui.notify(`[impression] Unknown subcommand: ${trimmed}\n${IMPRESSION_HELP}`, "warning");

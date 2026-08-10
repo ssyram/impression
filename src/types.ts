@@ -15,9 +15,22 @@ export const CONFIG_FILE_NAME = "impression.json";
 
 export type PromptVariant = "first-person" | "third-person";
 
+export type SkipDistillationRules = Record<string, Record<string, string>>;
+
+export function isSkipDistillationRules(value: unknown): value is SkipDistillationRules {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	return Object.values(value).every(
+		(conditions) =>
+			!!conditions &&
+			typeof conditions === "object" &&
+			!Array.isArray(conditions) &&
+			Object.values(conditions).every((pattern) => typeof pattern === "string"),
+	);
+}
+
 export interface ImpressionConfig {
 	"debug:distill-mode"?: PromptVariant;
-	skipDistillation?: string[];
+	skipDistillation?: SkipDistillationRules;
 	minLength?: number;
 	maxRecallBeforePassthrough?: number;
 	maxPassthroughCount?: number;
@@ -29,7 +42,7 @@ export interface ImpressionConfig {
 
 export interface ResolvedConfig {
 	debugDistillMode?: PromptVariant;
-	skipDistillation: string[];
+	skipDistillation: SkipDistillationRules;
 	minLength: number;
 	maxRecall: number;
 	maxPassthroughCount: number;
