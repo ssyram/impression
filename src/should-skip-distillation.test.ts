@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "../../../packages/coding-agent/node_modules/vitest/dist/index.js";
 import { shouldSkipDistillation } from "./should-skip-distillation.js";
 import { isSkipDistillationRules } from "./types.js";
 

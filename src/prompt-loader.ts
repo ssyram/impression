@@ -38,9 +38,9 @@ export function getImpressionSystemAppendTemplate(): string {
 }
 
 export function renderTemplate(template: string, vars: Record<string, string>): string {
-	let result = template;
-	for (const [key, value] of Object.entries(vars)) {
-		result = result.replaceAll(`{{${key}}}`, value);
-	}
-	return result.trimEnd();
+	return template
+		.replace(/\{\{([^{}]+)\}\}/g, (placeholder, key: string) =>
+			Object.hasOwn(vars, key) ? vars[key] : placeholder,
+		)
+		.trimEnd();
 }

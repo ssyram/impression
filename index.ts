@@ -8,35 +8,27 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { loadConfig, resolveConfig, saveLocalConfig } from "./src/config.js";
 import { distillWithSameModel } from "./src/distill.js";
+import { formatDistillationFailure } from "./src/format-distillation-failure.js";
+import { formatPassthroughReason } from "./src/format-passthrough-reason.js";
 import { formatOriginalCall } from "./src/format-call.js";
 import { getImpressionSystemAppendTemplate } from "./src/prompt-loader.js";
 import { buildImpressionText, createPassthroughToolResult, createRecallToolResult, notifyImpressionSkip } from "./src/result-builders.js";
 import { serializeContent } from "./src/serialize.js";
-import { type ArgumentCandidate, createCommandArgumentProvider } from "./src/tab-complete.js";
+import { serializeVisibleHistory } from "./src/serialize-visible-history.js";
 import { shouldSkipDistillation } from "./src/should-skip-distillation.js";
+import { type ArgumentCandidate, createCommandArgumentProvider } from "./src/tab-complete.js";
+import { writeProviderDebugPayload } from "./src/write-provider-debug-payload.js";
 import { CONFIG_FILE_NAME, DISTILL_LOG_ENTRY_TYPE, IMPRESSION_CONFIG_ENTRY_TYPE, IMPRESSION_ENTRY_TYPE, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getImpressionConfigData, getPassthroughModeData, getSessionStatsData, isImpressionConfigPatch, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry, isSkipDistillationRules } from "./src/types.js";
 import type { DistillLogEntry, ImpressionConfig, ImpressionDetails, ImpressionEntry, ResolvedConfig } from "./src/types.js";
 
 const RecallImpressionParams = Type.Object({
 	id: Type.String({ description: "Impression ID" }),
 });
-
-function serializeVisibleHistory(messages: ReturnType<typeof buildSessionContext>["messages"]): string {
-	// convertToLlm projects AgentMessage[] into the provider-bound Message[] shape
-	// (drops timestamp/provider/model/usage/stopReason metadata that the LLM never sees).
-	// KNOWN GAP: this still does NOT apply the "context" event mutator chain
-	// (transformContext → runner.emitContext in pi-coding-agent's agent-loop). Today
-	// no known sibling plugin mutates messages via that hook, so the divergence is
-	// theoretical. Tracked upstream at https://github.com/badlogic/pi-mono/issues/3953
-	// — when the upstream exposes `ctx.getLlmContext()` (or `emitContext`), switch to
-	// that for full fidelity.
-	return convertToLlm(messages).map((m) => JSON.stringify(m)).join("\n");
-}
 
 const SkipImpressionParams = Type.Object({
 	count: Type.Optional(Type.Number({ description: "Number of tool results to pass through unchanged (default 1). Capped by config. Set to 0 to cancel passthrough." })),
@@ -300,6 +292,44 @@ export default function (pi: ExtensionAPI) {
 	let cumulativeImpressionChars = 0;
 	let passthroughRemaining = 0;
 	let lastEstimatedChars = 0;
+	let captureNextMainProviderPayload = false;
+
+	function captureProviderPayload(
+		ctx: ExtensionContext,
+		source: "main" | "distillation",
+		payload: unknown,
+		metadata: Record<string, unknown> = {},
+	): void {
+		try {
+			const entries = ctx.sessionManager.getEntries();
+			const leafId = ctx.sessionManager.getLeafId();
+			const branch = ctx.sessionManager.getBranch();
+			const contextMessages = buildSessionContext(entries, leafId).messages;
+			const path = writeProviderDebugPayload(
+				ctx.sessionManager.getCwd(),
+				ctx.sessionManager.getSessionId(),
+				source,
+				payload,
+				{
+					leafId,
+					allEntryCount: entries.length,
+					branchEntryCount: branch.length,
+					branchEntries: branch.map((entry) => ({ id: entry.id, parentId: entry.parentId, type: entry.type })),
+					contextMessageCount: contextMessages.length,
+					...metadata,
+				},
+			);
+			ctx.ui.notify(`[impression:debug] Saved ${source} provider payload to ${path}`, "info");
+		} catch (error) {
+			ctx.ui.notify(`[impression:debug] Failed to save ${source} provider payload: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+	}
+
+	pi.on("before_provider_request", (event, ctx) => {
+		if (!cfg.debug || !captureNextMainProviderPayload) return;
+		captureNextMainProviderPayload = false;
+		captureProviderPayload(ctx, "main", event.payload);
+	});
 
 	function persistPassthroughRemaining() {
 		pi.appendEntry(PASSTHROUGH_MODE_ENTRY_TYPE, { remaining: passthroughRemaining, lastEstimatedChars });
@@ -366,7 +396,10 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function getVisibleHistory(ctx: ExtensionContext): string {
-		return serializeVisibleHistory(buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId()).messages);
+		const model = ctx.model;
+		const messages = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId()).messages;
+		if (!model) return serializeVisibleHistory(messages, { provider: "", api: "", model: "" });
+		return serializeVisibleHistory(messages, { provider: model.provider, api: model.api, model: model.id });
 	}
 
 	function applyConfigPatch(patch: Partial<ImpressionConfig>): void {
@@ -548,6 +581,18 @@ export default function (pi: ExtensionAPI) {
 			computeDistillMaxTokens(fullText.length, model, cfg),
 			ctx.signal,
 			cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
+			cfg.debug
+				? (payload) => {
+					captureNextMainProviderPayload = true;
+					captureProviderPayload(ctx, "distillation", payload, {
+						toolCallId: event.toolCallId,
+						toolName: event.toolName,
+						toolResultChars: fullText.length,
+						visibleHistoryChars: visibleHistory.length,
+						originalSystemPromptChars: originalSystemPrompt.length,
+					});
+				}
+				: undefined,
 		);
 
 		const ptLevel = cfg.debug ? "warning" : "info";
@@ -565,13 +610,18 @@ export default function (pi: ExtensionAPI) {
 				noteChars: fullText.length,
 				thinkingChars: distillation.thinking?.length ?? 0,
 				thinking: distillation.thinking,
+				failure: distillation.failure,
 				createdAt: Date.now(),
 			} satisfies DistillLogEntry);
 			if (cfg.showData) {
 				ctx.ui.notify(formatImpressionData(fullText.length, fullText.length), "info");
 			}
 			updateShowDataStatus(ctx);
-			ctx.ui.notify(`[impression] Passthrough for ${event.toolName}`, ptLevel);
+			if (distillation.failure) {
+				ctx.ui.notify(`[impression] Distillation failed for ${event.toolName}: ${formatDistillationFailure(distillation.failure)}`, "error");
+			} else {
+				ctx.ui.notify(`[impression] Passthrough for ${event.toolName}: ${formatPassthroughReason(distillation.passthroughReason)}`, ptLevel);
+			}
 			return { content: event.content };
 		}
 
@@ -712,12 +762,42 @@ export default function (pi: ExtensionAPI) {
 				computeDistillMaxTokens(impression.fullText.length, model, cfg),
 				signal,
 				cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
+				cfg.debug
+					? (payload) => {
+						captureNextMainProviderPayload = true;
+						captureProviderPayload(ctx, "distillation", payload, {
+							toolCallId: impression.toolCallId,
+							toolName: impression.toolName,
+							toolResultChars: impression.fullText.length,
+							visibleHistoryChars: visibleHistory.length,
+							originalSystemPromptChars: originalSystemPrompt.length,
+							recall: true,
+						});
+					}
+					: undefined,
 			);
 
 			const ptLevel = cfg.debug ? "warning" : "info";
 			if (distillation.passthrough) {
 				if (distillation.thinking) {
 					ctx.ui.notify(`[impression] Recall passthrough thinking: ${distillation.thinking}`, ptLevel);
+				}
+				if (distillation.failure) {
+					pi.appendEntry(DISTILL_LOG_ENTRY_TYPE, {
+						toolCallId: impression.toolCallId,
+						toolName: impression.toolName,
+						passthrough: true,
+						passthroughReason: distillation.passthroughReason,
+						originalChars: impression.fullText.length,
+						noteChars: impression.fullText.length,
+						thinkingChars: distillation.thinking?.length ?? 0,
+						thinking: distillation.thinking,
+						failure: distillation.failure,
+						createdAt: Date.now(),
+					} satisfies DistillLogEntry);
+					ctx.ui.notify(`[impression] Recall distillation failed for ${impression.toolName}: ${formatDistillationFailure(distillation.failure)}`, "error");
+				} else {
+					ctx.ui.notify(`[impression] Recall passthrough for ${impression.toolName}: ${formatPassthroughReason(distillation.passthroughReason)}`, ptLevel);
 				}
 				impression.recallCount = cfg.maxRecall;
 				updateRecallShowData(ctx, impression, "passthrough", distillation.note.length);

@@ -1,5 +1,6 @@
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { DistillationFailure } from "./distillation-failure.js";
 
 export const IMPRESSION_ENTRY_TYPE = "impression-v1";
 export const PASSTHROUGH_MODE_ENTRY_TYPE = "impression-passthrough-mode";
@@ -96,7 +97,7 @@ export interface SessionStatsEntry {
 	impressionChars: number;
 }
 
-export type PassthroughReason = "sentinel" | "truncated" | "failing" | "empty";
+export type PassthroughReason = "sentinel" | "truncated" | "failing" | "empty" | "error";
 
 /**
  * Auxiliary diagnostic log of one distill decision. Persisted as a custom session
@@ -113,6 +114,7 @@ export interface DistillLogEntry {
 	noteChars: number;
 	thinkingChars: number;
 	thinking?: string;
+	failure?: DistillationFailure;
 	createdAt: number;
 }
 

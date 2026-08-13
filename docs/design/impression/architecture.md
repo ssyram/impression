@@ -21,6 +21,11 @@ impression/
     ├── prompt-loader.ts              # Lazy-cached load of prompts/*.md + {{var}} template substitution
     ├── result-builders.ts            # Build the AgentToolResult payloads returned to the framework
     ├── format-call.ts                # UI rendering for the recall_impression tool call display
+    ├── format-passthrough-reason.ts  # Stable user-facing descriptions for passthrough classifications
+    ├── format-distillation-failure.ts # User-facing abnormal distillation diagnostics
+    ├── distillation-failure.ts        # Persisted abnormal distillation snapshot types
+    ├── snapshot-diagnostics.ts        # JSON-safe diagnostic projection without stacks
+    ├── write-provider-debug-payload.ts # Debug-only provider payload snapshots
     └── serialize.ts                  # Tool content (text + image blocks) → flat string for length / hashing / display
 ```
 
@@ -56,7 +61,8 @@ External coupling:
 │         buildSessionContext(         │
 │           getEntries(), getLeafId()) │
 │       )                              │
-│     • on <passthrough/>: pass through│
+│     • on passthrough: persist reason,│
+│       notify, return original content│
 │     • else: store impression,        │
 │       return placeholder text        │
 └──────────────────────────────────────┘
@@ -75,8 +81,10 @@ External coupling:
 │     full content                     │
 │   if recallCount ≥ maxRecall:        │
 │     deliver full content             │
-│   else: re-distill + return note,    │
-│     bump recallCount, persist        │
+│   else: re-distill; on passthrough,  │
+│     notify reason + deliver full;    │
+│     otherwise return note, bump      │
+│     recallCount, persist             │
 └──────────────────────────────────────┘
 
 ┌──────────────────────────────────────┐
@@ -196,11 +204,29 @@ distillWithSameModel(model, mode, auth, toolName, content, visibleHistory,
                      originalSystemPrompt, maxTokens, signal, onPromptVersion?)
   Pre: model is the active model with auth available
        maxTokens > 0
-  Ensures: returns { passthrough: bool, note: string, thinking?: string }
-           passthrough=true iff <passthrough/> sentinel detected in note
-           note is the LLM's response after sentinel/thinking-block stripping
+  Ensures: returns { passthrough: bool, note: string, thinking?: string,
+                     passthroughReason?: PassthroughReason }
+           passthrough=true with a stable reason when output is truncated,
+           empty after thinking-block stripping, a normalized <passthrough/>
+           sentinel, or not shorter than the original content
+           abnormal toolUse/error/aborted or future unknown stop reasons return
+           passthroughReason=error with an input/output diagnostic snapshot
+           passthrough=false only for non-empty output shorter than the original
   Side: one streaming LLM call billed to the user
 ```
+
+### 5.3.1 `src/format-passthrough-reason.ts`
+
+```
+formatPassthroughReason(reason)
+  Pre:  reason is PassthroughReason | undefined
+  Ensures: a defined reason remains verbatim at the start of the result and is
+           followed by its fixed explanation; undefined returns "unknown reason"
+           no model-generated text is included
+  Side: none
+```
+
+The exhaustive mapping and notice format are specified by [subplan impression-1-passthrough-reason-notices](subplans/impression-1-passthrough-reason-notices.md).
 
 ### 5.4 `src/result-builders.ts`
 
@@ -229,8 +255,11 @@ buildImpressionText(id, note)
 | `impression-passthrough-mode` | `{ remaining, lastEstimatedChars }` | Last entry on branch overwrites |
 | `impression-session-stats` | `{ originalChars, impressionChars }` cumulative | Last entry on branch overwrites |
 | `impression-config-v1` | Per-mutation partial `ImpressionConfig` patch | Spread-merged in append order over `loadConfig()` baseline |
+| `impression-distill-log` | Per-distillation metadata; abnormal entries additionally contain the exact system/user prompt, model, output response or thrown exception | Diagnostic only; not replayed into plugin state |
 
-All four are stored as pi `custom` entries (not `custom_message`), so `buildSessionContext.appendMessage` filters them out — they never reach the LLM.
+All five are stored as pi `custom` entries (not `custom_message`), so `buildSessionContext.appendMessage` filters them out — they never reach the LLM. Distillation diagnostic snapshots never include API keys, auth headers, error stacks, or non-primitive diagnostic detail values.
+
+When `debug` is enabled, logical provider payloads for the main agent and distiller are also written to `.pi/impression-debug/<session-id>/`. Each file includes the current leaf, its parent-chain branch entries, context message count, and source-specific size metadata; these files are diagnostic artifacts rather than session entries.
 
 ### 5.6 `index.ts` — additional function specs
 
@@ -304,11 +333,12 @@ Plugin → host boundaries. Each block follows §3.2 of `prompts/current/workflo
 接口：impression plugin → pi.appendEntry(customType: string, data: unknown)
 
 输入数据：
-  customType — one of the four constants declared in src/types.ts:
+  customType — one of the five constants declared in src/types.ts:
     IMPRESSION_ENTRY_TYPE         = "impression-v1"
     PASSTHROUGH_MODE_ENTRY_TYPE   = "impression-passthrough-mode"
     SESSION_STATS_ENTRY_TYPE      = "impression-session-stats"
     IMPRESSION_CONFIG_ENTRY_TYPE  = "impression-config-v1"
+    DISTILL_LOG_ENTRY_TYPE        = "impression-distill-log"
   data — payload whose shape matches the type (per §5.5 above).
 
 输出数据：
@@ -316,7 +346,7 @@ Plugin → host boundaries. Each block follows §3.2 of `prompts/current/workflo
   append per pi-coding-agent's session-manager contract).
 
 协议约定：
-  - 调用方：MUST use one of the four declared customType strings;
+  - 调用方：MUST use one of the five declared customType strings;
     payload shape MUST match the corresponding type guard in
     src/types.ts (so replay round-trips cleanly).
   - 被调用方：guarantees the entry is on the ACTIVE branch and is
@@ -334,16 +364,21 @@ Plugin → host boundaries. Each block follows §3.2 of `prompts/current/workflo
   AgentMessage[] — taken from buildSessionContext(getEntries(), getLeafId()).messages.
 
 输出数据：
-  Provider-bound Message[] shape: the same projection pi itself uses
-  before each LLM call. Drops timestamp / provider / model / usage /
-  stopReason metadata; folds tool_use and tool_result roles per
-  provider format.
+  Generic pi-ai Message[] shape. Provider adapters later convert this
+  shape to their wire protocol; assistant provider/model/usage metadata
+  and opaque signatures can still be present at this stage.
 
 协议约定：
   - 调用方：passes the result of buildSessionContext (with leafId
     honored, so fork siblings don't leak in).
-  - 被调用方：is the canonical projection used by pi itself before
-    each LLM call. Output shape matches what the active model receives.
+  - impression serializes the generic messages as newline-delimited JSON.
+    For the exact active combination openai-codex +
+    openai-codex-responses, same-model assistant messages may omit only
+    signatures matching the current Responses reasoning-item schema or
+    TextSignatureV1. Provider/API/model mismatch, unknown schema/version,
+    malformed data, or projection failure falls back to the canonical
+    unmodified convertToLlm + JSON.stringify output.
+  - No message budgeting, truncation, or selection occurs in this layer.
   - 已知 Gap：the transformContext mutator chain (sibling extensions'
     "context" event hooks) is NOT applied by convertToLlm — see Known
     Gap 1 in §8 and upstream issue badlogic/pi-mono#3953.
@@ -408,7 +443,7 @@ Plugin → host boundaries. Each block follows §3.2 of `prompts/current/workflo
 
 6. **Numeric range clamping with warning.** Round 6 (this revision): `minLength`, `maxRecallBeforePassthrough`, `maxPassthroughCount` have lower bounds (`1`, `0`, `0`). Out-of-range values from file / replay / `/impression set` are clamped with a `ctx.ui.notify` warning. Type-incompatible values (string where number expected, etc.) are still hard-rejected by `validateConfigValue`.
 
-7. **`visibleHistory` for the distiller uses `convertToLlm` projection.** Round 5: instead of raw `JSON.stringify(AgentMessage)` (which leaks `timestamp`/`provider`/`model`/`usage`/`stopReason` metadata the LLM never sees), the plugin runs `convertToLlm` (re-exported by pi-coding-agent) so the format matches what pi sends to the agent's LLM. **Known gap**: the `transformContext` mutator chain (which lets sibling extensions rewrite messages via the `"context"` event hook) is NOT applied; today no plugin in this monorepo mutates that way, but a future trimming extension would diverge. Tracked as a feature request to badlogic/pi-mono — when upstream exposes `ctx.getLlmContext()` (or `emitContext`), this plugin will switch to it.
+7. **`visibleHistory` uses a fallback-first provider projection.** The canonical path remains `convertToLlm(messages).map(JSON.stringify).join("\n")`, with no budgeting or truncation. Only the exact active `openai-codex` + `openai-codex-responses` combination may project same-model assistant history by omitting opaque signatures whose runtime shape strictly matches the current Responses reasoning-item schema or `TextSignatureV1`. Any provider/API/model mismatch, unknown schema/version, malformed signature, or adapter exception retains the canonical bytes. This optimization affects only the distiller's quoted JSON copy; it never mutates session or main-agent messages. **Known gap**: the `transformContext` mutator chain (which lets sibling extensions rewrite messages via the `"context"` event hook) is NOT applied; today no plugin in this monorepo mutates that way, but a future trimming extension would diverge. Tracked as a feature request to badlogic/pi-mono — when upstream exposes `ctx.getLlmContext()` (or `emitContext`), this plugin will switch to it.
 
 ## 7. Concurrency
 
@@ -432,5 +467,5 @@ Rely-Guarantee for saveLocalConfig:
 ## 8. KNOWN GAPS
 
 1. **`transformContext` chain not applied to `visibleHistory`** — see decision 7 above. Tracked upstream: <https://github.com/badlogic/pi-mono/issues/3953>.
-2. **No tests.** Sibling pi plugins (e.g. `recap`, `task-tracker`) also lack tests; this matches local convention but does not satisfy `prompts/current/workflow.md` §4.3 testing requirement. Out of scope for this iteration.
+2. **Limited test coverage.** Command tab completion and passthrough reason formatting have focused unit tests. Faux-provider integration tests cover initial `empty` and recall `sentinel` notifications, but `truncated` and `failing` are not exercised through the full extension flow and the distiller classification branches have no direct behavioral test.
 3. **`impressions: Map` is unbounded for non-delivered entries.** Long sessions where the LLM never recalls accumulate stripped (post-delivery) entries plus full undelivered entries. Currently considered acceptable; a TTL / LRU eviction policy would be a separate design iteration.
