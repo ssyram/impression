@@ -9,6 +9,7 @@ export interface DistillationContextSnapshot {
 	maxTokens: number;
 	systemPrompt: string;
 	userPrompt: string;
+	mode: "structured";
 }
 
 export interface DistillationDiagnostic {

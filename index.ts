@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { buildSessionContext } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { loadConfig, resolveConfig, saveLocalConfig } from "./src/config.js";
@@ -16,14 +16,14 @@ import { distillWithSameModel } from "./src/distill.js";
 import { formatDistillationFailure } from "./src/format-distillation-failure.js";
 import { formatPassthroughReason } from "./src/format-passthrough-reason.js";
 import { formatOriginalCall } from "./src/format-call.js";
+import { getToolResultDistillationSkipReason } from "./src/get-tool-result-distillation-skip-reason.js";
 import { getImpressionSystemAppendTemplate } from "./src/prompt-loader.js";
 import { buildImpressionText, createPassthroughToolResult, createRecallToolResult, notifyImpressionSkip } from "./src/result-builders.js";
 import { serializeContent } from "./src/serialize.js";
-import { serializeVisibleHistory } from "./src/serialize-visible-history.js";
 import { shouldSkipDistillation } from "./src/should-skip-distillation.js";
 import { type ArgumentCandidate, createCommandArgumentProvider } from "./src/tab-complete.js";
 import { writeProviderDebugPayload } from "./src/write-provider-debug-payload.js";
-import { CONFIG_FILE_NAME, DISTILL_LOG_ENTRY_TYPE, IMPRESSION_CONFIG_ENTRY_TYPE, IMPRESSION_ENTRY_TYPE, PASSTHROUGH_MODE_ENTRY_TYPE, SESSION_STATS_ENTRY_TYPE, getEntryData, getImpressionConfigData, getPassthroughModeData, getSessionStatsData, isImpressionConfigPatch, isImpressionEntry, isPassthroughModeEntry, isSessionStatsEntry, isSkipDistillationRules } from "./src/types.js";
+import { CONFIG_FILE_NAME, DISTILL_LOG_ENTRY_TYPE, IMPRESSION_CONFIG_ENTRY_TYPE, IMPRESSION_ENTRY_TYPE, PASSTHROUGH_MODE_ENTRY_TYPE, PROMPT_VARIANTS, SESSION_STATS_ENTRY_TYPE, getEntryData, getImpressionConfigData, getPassthroughModeData, getSessionStatsData, isImpressionConfigPatch, isImpressionEntry, isPassthroughModeEntry, isPromptVariant, isSessionStatsEntry, isSkipDistillationRules } from "./src/types.js";
 import type { DistillLogEntry, ImpressionConfig, ImpressionDetails, ImpressionEntry, ResolvedConfig } from "./src/types.js";
 
 const RecallImpressionParams = Type.Object({
@@ -135,6 +135,7 @@ const CONFIG_KEY_DEFS: ConfigKeyDef[] = [
 	{ key: "debug", display: "Debug", type: "boolean" },
 	{ key: "showData", display: "ShowData", type: "boolean" },
 	{ key: "minLength", display: "MinLength", type: "number", min: 1 },
+	{ key: "errorMinLength", display: "ErrorMinLength", type: "number", min: -1 },
 	{ key: "maxRecallBeforePassthrough", display: "MaxRecall", type: "number", min: 0 },
 	{ key: "maxPassthroughCount", display: "MaxPassthroughCount", type: "number", min: 0 },
 	{ key: "distillRateFloor", display: "DistillRateFloor", type: "number", min: 0 },
@@ -173,9 +174,9 @@ function validateConfigValue(def: ConfigKeyDef, value: unknown): string | null {
 				? null
 				: `${def.display} must be a JSON object of tool names to string parameter patterns, e.g. {"read":{},"subagent":{"action":"list"}}`;
 		case "distill-mode":
-			return value === "first-person" || value === "third-person"
+			return isPromptVariant(value)
 				? null
-				: `${def.display} must be "first-person" or "third-person"`;
+				: `${def.display} must be one of: ${PROMPT_VARIANTS.join(", ")}`;
 	}
 }
 
@@ -395,11 +396,9 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
-	function getVisibleHistory(ctx: ExtensionContext): string {
-		const model = ctx.model;
+	function getVisibleHistory(ctx: ExtensionContext) {
 		const messages = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId()).messages;
-		if (!model) return serializeVisibleHistory(messages, { provider: "", api: "", model: "" });
-		return serializeVisibleHistory(messages, { provider: model.provider, api: model.api, model: model.id });
+		return convertToLlm(messages);
 	}
 
 	function applyConfigPatch(patch: Partial<ImpressionConfig>): void {
@@ -546,14 +545,10 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(`[impression] Skipped distillation for "${event.toolName}" (configured in ${CONFIG_FILE_NAME})`, "info");
 			return;
 		}
-		if (event.isError) {
-			notifyImpressionSkip(ctx, "tool result is an error");
-			return;
-		}
-
 		const fullText = serializeContent(event.content);
-		if (fullText.length < cfg.minLength) {
-			ctx.ui.notify(`[impression] Skipped: content length ${fullText.length} is below threshold of ${cfg.minLength}`, "info");
+		const thresholdSkipReason = getToolResultDistillationSkipReason(event.isError, fullText.length, cfg);
+		if (thresholdSkipReason) {
+			ctx.ui.notify(`[impression] Skipped: ${thresholdSkipReason}`, "info");
 			return;
 		}
 
@@ -574,10 +569,12 @@ export default function (pi: ExtensionAPI) {
 			model,
 			cfg.debugDistillMode,
 			{ apiKey: auth.apiKey, headers: auth.headers },
-			event.toolName,
-			event.content,
-			visibleHistory,
-			originalSystemPrompt,
+			{
+				toolName: event.toolName,
+				content: event.content,
+				visibleHistory,
+				originalSystemPrompt,
+			},
 			computeDistillMaxTokens(fullText.length, model, cfg),
 			ctx.signal,
 			cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
@@ -588,7 +585,7 @@ export default function (pi: ExtensionAPI) {
 						toolCallId: event.toolCallId,
 						toolName: event.toolName,
 						toolResultChars: fullText.length,
-						visibleHistoryChars: visibleHistory.length,
+						visibleHistoryMessages: visibleHistory.length,
 						originalSystemPromptChars: originalSystemPrompt.length,
 					});
 				}
@@ -755,10 +752,12 @@ export default function (pi: ExtensionAPI) {
 				model,
 				cfg.debugDistillMode,
 				{ apiKey: auth.apiKey, headers: auth.headers },
-				impression.toolName,
-				impression.fullContent,
-				visibleHistory,
-				originalSystemPrompt,
+				{
+					toolName: impression.toolName,
+					content: impression.fullContent,
+					visibleHistory,
+					originalSystemPrompt,
+				},
 				computeDistillMaxTokens(impression.fullText.length, model, cfg),
 				signal,
 				cfg.debug ? (version) => ctx.ui.notify(`[impression:debug] Using prompt version: ${version}`, "info") : undefined,
@@ -766,10 +765,10 @@ export default function (pi: ExtensionAPI) {
 					? (payload) => {
 						captureNextMainProviderPayload = true;
 						captureProviderPayload(ctx, "distillation", payload, {
-							toolCallId: impression.toolCallId,
-							toolName: impression.toolName,
+							toolCallId: _toolCallId,
+							toolName: "recall_impression",
 							toolResultChars: impression.fullText.length,
-							visibleHistoryChars: visibleHistory.length,
+							visibleHistoryMessages: visibleHistory.length,
 							originalSystemPromptChars: originalSystemPrompt.length,
 							recall: true,
 						});

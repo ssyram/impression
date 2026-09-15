@@ -115,6 +115,7 @@ impression/
     "subagent": { "action": "list" }
   },
   "minLength": 2048,
+  "errorMinLength": 40960,
   "maxRecallBeforePassthrough": 1,
   "maxPassthroughCount": 2,
   "distillRateFloor": 0.02,
@@ -128,13 +129,14 @@ impression/
 | `debug` | `boolean` | `false` | 开启调试通知与调试用选项。 |
 | `debug:distill-mode` | `"first-person" \| "third-person"` | 未设置 | 调试用，强制 distiller 使用某一种 prompt 模式。仅在 `debug: true` 时生效，否则被忽略并给出警告。 |
 | `skipDistillation` | `Record<string, Record<string, string>>` | `{}` | 工具名到输入条件的映射；全部条件匹配时才透传。工具条件为 `{}` 时，所有调用均透传；非空条件要求对应输入存在且为字符串。普通 pattern 精确相等；`/…/` 是 JavaScript 正则（例如 `{ "subagent": { "action": "/^(list|status)$/" } }`）。缺少参数、参数非字符串或正则无效时均不匹配。 |
-| `minLength` | `number` | `2048` | 触发蒸馏所需的最小文本长度（字符数）。 |
+| `minLength` | `number` | `2048` | 非错误结果触发蒸馏所需的最小文本长度（字符数）。 |
+| `errorMinLength` | `number` | `40960` | 错误结果触发蒸馏的独立最小长度。设为 `-1` 禁用错误结果蒸馏；设为 `0` 则每个错误结果都尝试蒸馏。 |
 | `maxRecallBeforePassthrough` | `number` | `1` | 切换为完整透传前，召回时返回"重新蒸馏笔记"的最大次数。**`0` 表示每次召回都直接给完整原文** —— 当你希望 agent 在初次蒸馏后总是拿到精确文本时用这个。 |
 | `maxPassthroughCount` | `number` | `2` | `skip_impression count=N` 的硬上限。 |
 | `distillRateFloor` | `number` | `0.02` | 蒸馏 output 预算的 per-char 系数。蒸馏调用的有效 `max_tokens` = `clamp(originalLength * distillRateFloor, 1024, model.maxTokens \|\| 8192)`。原文越长预算按比例越宽（让笔记可以多写一点），但永远受模型的单次 output 上限封顶（拿不到时用 `8192` fallback）。实际笔记长度由 prompt 里的长度约束控制，**不**由这个数字控制——这只是 safety ceiling。下限：`0`。 |
 | `showData` | `boolean` | `false` | 显示每次蒸馏的字符数据，格式为 `[impression:data] XXX / YYY = ZZ%`；其中展示值使用 `k`/`M` 等紧凑格式并保留两位小数，但比例始终基于底层精确字符数计算；底部状态会持续累积显示 `impression / original`。 |
 
-> **数值越界会被告警并截到最小值。** 数值字段的下限：`minLength ≥ 1`、`maxRecallBeforePassthrough ≥ 0`、`maxPassthroughCount ≥ 0`、`distillRateFloor ≥ 0`。低于下限的值（无论来自文件、会话日志重放还是 `/impression set`）会被截到下限，并通过 `ctx.ui.notify` 发出 warning。`.pi/impression.json` 的 JSON 解析错误也会在 session 启动时作为 warning 浮出，并把该文件忽略。
+> **数值越界会被告警并截到最小值。** 数值字段的下限：`minLength ≥ 1`、`errorMinLength ≥ -1`、`maxRecallBeforePassthrough ≥ 0`、`maxPassthroughCount ≥ 0`、`distillRateFloor ≥ 0`。低于下限的值（无论来自文件、会话日志重放还是 `/impression set`）会被截到下限，并通过 `ctx.ui.notify` 发出 warning。`.pi/impression.json` 的 JSON 解析错误也会在 session 启动时作为 warning 浮出，并把该文件忽略。
 
 > **成本说明。** 每次蒸馏都会调用 agent 当前正在用的同一个 provider/model，input 是 agent 的 system prompt + 可见消息历史 + 工具结果。Recall 重蒸馏也是同样的开销。在工具结果普遍较长的长会话里，这相当于 token 成本翻倍（每个长 tool result 都多一次往返）。
 >
@@ -163,7 +165,7 @@ impression/
 | `/impression set [--persistent] NAME VALUE` | 在当前会话中设置某一字段。`VALUE` 按 JSON 解析并按字段类型校验。带 `--persistent` 时还会把改动写回 `.pi/impression.json`（**后台异步**写入，失败会通过 warning 通知）。 |
 | `/impression tool1,tool2,...` | 简写：为列出的工具添加空 `SkipDistillation` 条件，使本会话中这些工具的所有调用都透传。**必须带逗号**（或用引号），单个裸词被视为未知子命令。 |
 
-**字段名匹配**：`NAME` 大小写、分隔符不敏感。匹配方法是：lowercase 并去掉所有非字母数字字符，然后既比对 JSON 文件键也比对 PascalCase 显示名。`MaxRecall` / `maxRecall` / `max-recall` / `max_recall` / `"max recall"` / `max:recall` / `maxrecall` / `maxRecallBeforePassthrough` 都解析到同一字段。显示名（用于通知和帮助文本）一律 PascalCase：`Enabled`、`Debug`、`ShowData`、`MinLength`、`MaxRecall`、`MaxPassthroughCount`、`SkipDistillation`、`DebugDistillMode`。
+**字段名匹配**：`NAME` 大小写、分隔符不敏感。匹配方法是：lowercase 并去掉所有非字母数字字符，然后既比对 JSON 文件键也比对 PascalCase 显示名。`MaxRecall` / `maxRecall` / `max-recall` / `max_recall` / `"max recall"` / `max:recall` / `maxrecall` / `maxRecallBeforePassthrough` 都解析到同一字段。显示名（用于通知和帮助文本）一律 PascalCase：`Enabled`、`Debug`、`ShowData`、`MinLength`、`ErrorMinLength`、`MaxRecall`、`MaxPassthroughCount`、`SkipDistillation`、`DebugDistillMode`。
 
 **值类型校验**：`enabled` / `debug` / `showData` → 布尔；长度 / 比例字段 → 有限数字；`skipDistillation` → 从精确工具名到字符串输入 pattern 对象的 JSON 映射（例：`{ "read": {}, "subagent": { "action": "list" } }`）；`debug:distill-mode` → `"first-person"` 或 `"third-person"`。类型不匹配直接拒绝并给出原因。
 
@@ -186,7 +188,7 @@ impression/
 ### 启用后会看到什么
 
 - **状态栏** 会在压缩过程中显示 `[impression] Distilling N chars with provider/model...`
-- 对被跳过的结果会显示 **通知**（例如内容太短、命中跳过列表、发生错误）
+- 对被跳过的结果会显示 **通知**（例如内容太短、命中跳过列表，或错误结果低于 `errorMinLength` / 以 `-1` 禁用）
 - **工具结果** 会被替换为 `🧠 [MY INTERNAL MEMORY | ID: ...]` 这类格式
 - 代理工具列表中会出现 **`recall_impression` 工具**
 - 如果加载了 **`docker` 插件**，累计的 **`[impression:data]`** 会展示在 docker 中；否则继续显示在 footer 里
@@ -202,7 +204,7 @@ impression/
 
 - 如果代理总是立刻召回：提高 `minLength`
 - 如果关键细节丢失：将 `maxRecallBeforePassthrough` 调低到 `0`，或把对应工具加入 `skipDistillation`
-- 如果蒸馏太慢：提高 `minLength`，减少蒸馏频率
+- 如果蒸馏太慢：提高普通结果的 `minLength` 和错误结果的 `errorMinLength`
 
 ## 自定义提示词
 

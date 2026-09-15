@@ -1,0 +1,20 @@
+{
+	"compilerOptions": {
+		"noEmit": true,
+		"strict": true,
+		"target": "ES2022",
+		"lib": ["ES2022"],
+		"erasableSyntaxOnly": true,
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"types": ["node"],
+		"skipLibCheck": true
+	},
+	"include": [
+		"src/source-indexing/*.ts",
+		"src/prepare-source-references.ts",
+		"src/source-reference-prompts.ts",
+		"src/source-reference-pipeline.ts",
+		"src/source-reference-*.test.ts"
+	]
+}

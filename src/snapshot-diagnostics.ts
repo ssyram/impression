@@ -5,6 +5,7 @@ export function snapshotDiagnostics(diagnostics: AssistantMessage["diagnostics"]
 	return diagnostics?.map((diagnostic) => {
 		const details: Record<string, string | number | boolean | null> = {};
 		for (const [key, value] of Object.entries(diagnostic.details ?? {})) {
+			if (/signature|encrypted/i.test(key)) continue;
 			if (value === null || ["string", "number", "boolean"].includes(typeof value)) details[key] = value;
 		}
 		return {

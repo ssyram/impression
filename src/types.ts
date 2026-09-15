@@ -8,13 +8,32 @@ export const SESSION_STATS_ENTRY_TYPE = "impression-session-stats";
 export const IMPRESSION_CONFIG_ENTRY_TYPE = "impression-config-v1";
 export const DISTILL_LOG_ENTRY_TYPE = "impression-distill-log";
 export const DEFAULT_MIN_LENGTH = 2048;
+export const DEFAULT_ERROR_MIN_LENGTH = 40960;
 export const DEFAULT_MAX_RECALL = 1;
 export const DEFAULT_MAX_PASSTHROUGH_COUNT = 2;
 export const DEFAULT_DISTILL_RATE_FLOOR = 0.02;
 export const DISTILLER_SENTINEL = "<passthrough/>";
 export const CONFIG_FILE_NAME = "impression.json";
 
-export type PromptVariant = "first-person" | "third-person";
+export const EXPERIMENTAL_PROMPT_VARIANTS = [
+	"pre-firewall",
+	"minimal-objective",
+	"kimi-ledger",
+	"deepseek-pro-anchor",
+	"deepseek-flash-gate",
+	"claude-opus-subjectban",
+	"claude-sonnet-provenance",
+	"terra-fence",
+	"sol-firewall",
+] as const;
+
+export const PROMPT_VARIANTS = ["first-person", "third-person", ...EXPERIMENTAL_PROMPT_VARIANTS] as const;
+
+export type PromptVariant = (typeof PROMPT_VARIANTS)[number];
+
+export function isPromptVariant(value: unknown): value is PromptVariant {
+	return typeof value === "string" && PROMPT_VARIANTS.some((variant) => variant === value);
+}
 
 export type SkipDistillationRules = Record<string, Record<string, string>>;
 
@@ -33,6 +52,7 @@ export interface ImpressionConfig {
 	"debug:distill-mode"?: PromptVariant;
 	skipDistillation?: SkipDistillationRules;
 	minLength?: number;
+	errorMinLength?: number;
 	maxRecallBeforePassthrough?: number;
 	maxPassthroughCount?: number;
 	showData?: boolean;
@@ -45,6 +65,7 @@ export interface ResolvedConfig {
 	debugDistillMode?: PromptVariant;
 	skipDistillation: SkipDistillationRules;
 	minLength: number;
+	errorMinLength: number;
 	maxRecall: number;
 	maxPassthroughCount: number;
 	showData: boolean;

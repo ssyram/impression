@@ -115,6 +115,7 @@ Create `.pi/impression.json` in your project root (optional — all fields have 
     "subagent": { "action": "list" }
   },
   "minLength": 2048,
+  "errorMinLength": 40960,
   "maxRecallBeforePassthrough": 1,
   "maxPassthroughCount": 2,
   "distillRateFloor": 0.02,
@@ -128,13 +129,14 @@ Create `.pi/impression.json` in your project root (optional — all fields have 
 | `debug` | `boolean` | `false` | Enables debug notifications and debug-only options. |
 | `debug:distill-mode` | `"first-person" \| "third-person"` | unset | Debug override for distiller prompt mode. Works only when `debug: true`; otherwise it is ignored with a warning. |
 | `skipDistillation` | `Record<string, Record<string, string>>` | `{}` | Tool names mapped to input conditions that must match before passthrough. A tool with `{}` always passes through; every non-empty condition must find a string input value and match it. Plain patterns use exact equality; `/.../` patterns are JavaScript regular expressions (for example, `{ "subagent": { "action": "/^(list|status)$/" } }`). Missing, non-string, or invalid-regex conditions do not match. |
-| `minLength` | `number` | `2048` | Minimum text length (chars) to trigger distillation. |
+| `minLength` | `number` | `2048` | Minimum non-error text length (chars) to trigger distillation. |
+| `errorMinLength` | `number` | `40960` | Independent minimum error-result length to trigger distillation. Set to `-1` to disable error-result distillation; set to `0` to attempt every error result. |
 | `maxRecallBeforePassthrough` | `number` | `1` | Recalls returning re-distilled notes before switching to full passthrough. **`0` means every recall delivers the full content immediately** — useful when you want the agent to always get exact text after the initial distillation. |
 | `maxPassthroughCount` | `number` | `2` | Hard cap on `skip_impression count=N`. |
 | `distillRateFloor` | `number` | `0.02` | Per-input-char allowance for the distill output budget. The effective `max_tokens` passed to the distiller is `clamp(originalLength * distillRateFloor, 1024, model.maxTokens \|\| 8192)`. Bigger inputs get proportionally more headroom (so the digest can be substantial), but the digest is always capped by the model's per-call output ceiling (or `8192` fallback). The model's prompt-driven length instructions, not this number, are what keep the digest concise — this is just a safety ceiling. Lower bound on this field: `0`. |
 | `showData` | `boolean` | `false` | Shows per-distillation char data as `[impression:data] XXX / YYY = ZZ%`, where the display uses compact `k`/`M` formatting with two decimals, while the ratio is calculated from exact underlying character counts and the footer keeps a cumulative `impression / original` status. |
 
-> **Out-of-range numeric values are clamped with a warning.** Numeric fields have lower bounds: `minLength ≥ 1`, `maxRecallBeforePassthrough ≥ 0`, `maxPassthroughCount ≥ 0`, `distillRateFloor ≥ 0`. A value below the bound (whether from the file, a session log replay, or `/impression set`) is clamped to the bound and the user is notified via `ctx.ui.notify` warning. JSON parse errors in `.pi/impression.json` are also surfaced as warnings at session start (the file is then ignored).
+> **Out-of-range numeric values are clamped with a warning.** Numeric fields have lower bounds: `minLength ≥ 1`, `errorMinLength ≥ -1`, `maxRecallBeforePassthrough ≥ 0`, `maxPassthroughCount ≥ 0`, `distillRateFloor ≥ 0`. A value below the bound (whether from the file, a session log replay, or `/impression set`) is clamped to the bound and the user is notified via `ctx.ui.notify` warning. JSON parse errors in `.pi/impression.json` are also surfaced as warnings at session start (the file is then ignored).
 
 > **Cost note.** Each distillation invokes the same provider/model the agent itself uses, with the agent's system prompt + visible message history + the tool result as input. Recall re-distillation does the same. On long sessions with many large tool results, this roughly doubles the token cost (every long tool result triggers one extra round trip).
 >
@@ -165,7 +167,7 @@ All subcommands and the `--persistent` flag are case-insensitive.
 | `/impression set [--persistent] NAME VALUE` | Set one config field. `VALUE` is parsed as JSON; type-checked against the field. With `--persistent`, the patch is also written back to `.pi/impression.json` (in the background; a warning is shown if the write fails). |
 | `/impression tool1,tool2,...` | Shorthand: add empty `SkipDistillation` conditions for the listed tools, so every call to each tool passes through for this session. **Requires a comma** (or quoting) — single bare words are treated as unknown subcommands. |
 
-**Field naming**: `NAME` is matched case- and separator-insensitively. After lowercasing and stripping all non-alphanumerics, the input is looked up against both the JSON-file keys and the PascalCase display names. All of `MaxRecall`, `maxRecall`, `max-recall`, `max_recall`, `"max recall"`, `max:recall`, `maxrecall`, and `maxRecallBeforePassthrough` resolve to the same field. Display names (used in notifications and help) are PascalCase: `Enabled`, `Debug`, `ShowData`, `MinLength`, `MaxRecall`, `MaxPassthroughCount`, `SkipDistillation`, `DebugDistillMode`.
+**Field naming**: `NAME` is matched case- and separator-insensitively. After lowercasing and stripping all non-alphanumerics, the input is looked up against both the JSON-file keys and the PascalCase display names. All of `MaxRecall`, `maxRecall`, `max-recall`, `max_recall`, `"max recall"`, `max:recall`, `maxrecall`, and `maxRecallBeforePassthrough` resolve to the same field. Display names (used in notifications and help) are PascalCase: `Enabled`, `Debug`, `ShowData`, `MinLength`, `ErrorMinLength`, `MaxRecall`, `MaxPassthroughCount`, `SkipDistillation`, `DebugDistillMode`.
 
 **Value typing**: `enabled` / `debug` / `showData` → boolean; length / rate fields → finite number; `skipDistillation` → JSON object from exact tool names to objects of string input patterns (e.g. `{ "read": {}, "subagent": { "action": "list" } }`); `debug:distill-mode` → `"first-person"` or `"third-person"`. Mismatched values are rejected with an explanation.
 
@@ -188,7 +190,7 @@ The plugin registers three tools for the LLM:
 ### Signs It's Active
 
 - **Status bar** shows `[impression] Distilling N chars with provider/model...` during compression.
-- **Notifications** for skipped results (too short, in skip list, errors).
+- **Notifications** for skipped results (too short, in the skip list, or error results below `errorMinLength` / disabled with `-1`).
 - **Tool results** are replaced with the `🧠 [MY INTERNAL MEMORY | ID: ...]` format.
 - A **`recall_impression` tool** appears in the agent's tool list.
 - If the **`docker` plugin** is loaded, cumulative **`[impression:data]`** stats are shown there; otherwise they remain in the footer.
@@ -204,7 +206,7 @@ The plugin registers three tools for the LLM:
 
 - Agent keeps recalling immediately → raise `minLength`.
 - Important details lost → lower `maxRecallBeforePassthrough` to `0`, or add the tool to `skipDistillation`.
-- Distillation too slow → raise `minLength` to distill less often.
+- Distillation too slow → raise `minLength` for normal results and `errorMinLength` for error results.
 
 ## Customizing Prompts
 

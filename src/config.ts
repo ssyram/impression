@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { CONFIG_FILE_NAME, DEFAULT_DISTILL_RATE_FLOOR, DEFAULT_MAX_PASSTHROUGH_COUNT, DEFAULT_MAX_RECALL, DEFAULT_MIN_LENGTH } from "./types.js";
+import { CONFIG_FILE_NAME, DEFAULT_DISTILL_RATE_FLOOR, DEFAULT_ERROR_MIN_LENGTH, DEFAULT_MAX_PASSTHROUGH_COUNT, DEFAULT_MAX_RECALL, DEFAULT_MIN_LENGTH } from "./types.js";
 import type { ImpressionConfig, ResolvedConfig } from "./types.js";
 
 export function resolveConfig(raw: ImpressionConfig): ResolvedConfig {
@@ -11,6 +11,7 @@ export function resolveConfig(raw: ImpressionConfig): ResolvedConfig {
 		debugDistillMode: raw["debug:distill-mode"],
 		skipDistillation: raw.skipDistillation ?? {},
 		minLength: raw.minLength ?? DEFAULT_MIN_LENGTH,
+		errorMinLength: raw.errorMinLength ?? DEFAULT_ERROR_MIN_LENGTH,
 		maxRecall: raw.maxRecallBeforePassthrough ?? DEFAULT_MAX_RECALL,
 		maxPassthroughCount: raw.maxPassthroughCount ?? DEFAULT_MAX_PASSTHROUGH_COUNT,
 		showData: raw.showData ?? false,

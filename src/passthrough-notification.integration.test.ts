@@ -126,12 +126,14 @@ describe("passthrough notifications", () => {
 				.find((candidate) => candidate.type === "custom" && candidate.customType === DISTILL_LOG_ENTRY_TYPE);
 			assert.ok(entry);
 			if (entry.type !== "custom") throw new Error("Expected a custom distillation log entry");
-			const failure = (entry.data as { failure?: { kind?: string; context?: { userPrompt?: string }; response?: { errorMessage?: string; responseId?: string; stopReason?: string } } }).failure;
+			const failure = (entry.data as { failure?: { kind?: string; context?: { mode?: string; userPrompt?: string }; response?: { errorMessage?: string; responseId?: string; stopReason?: string } } }).failure;
 			assert.equal(failure?.kind, "response");
 			assert.equal(failure?.response?.stopReason, "error");
 			assert.equal(failure?.response?.errorMessage, "Codex error: fetch failed");
 			assert.equal(failure?.response?.responseId, "response-error");
-			assert.ok(failure?.context?.userPrompt?.includes(LONG_OUTPUT.trim()));
+			assert.equal(failure?.context?.mode, "structured");
+			assert.ok(failure?.context?.userPrompt?.includes("The immediately preceding `<tool_result>` data message"));
+			assert.ok(!failure?.context?.userPrompt?.includes(LONG_OUTPUT.trim()));
 			assert.equal(harness.getPendingResponseCount(), 0);
 		} finally {
 			harness.cleanup();

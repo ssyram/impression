@@ -1,9 +1,10 @@
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import { getImpressionTextTemplate } from "./prompt-loader.js";
+import { formatSourceReferenceNote } from "./source-reference-pipeline.js";
 import type { ImpressionDetails } from "./types.js";
-import { getImpressionTextTemplate, renderTemplate } from "./prompt-loader.js";
 
 export function buildImpressionText(id: string, note: string): string {
-	return renderTemplate(getImpressionTextTemplate(), { id, note });
+	return formatSourceReferenceNote(getImpressionTextTemplate(), { id, note });
 }
 
 export function createRecallToolResult(

@@ -4,7 +4,7 @@
 
 ## 1. Purpose
 
-`impression` watches the agent's `tool_result` stream. When a tool result is "long" (per `minLength`) it asks the **same** active LLM to produce a compact distilled note, replaces the tool result with a placeholder text referencing an opaque `id`, and stores the full original content in the session JSONL log. The agent can later `recall_impression(id)` to retrieve a (re-distilled or full) view, `skip_impression(...)` to opt out of distillation for the next N tool results, or `save_impression(id)` to dump the full original to a sandboxed cache file for inspection.
+`impression` watches the agent's `tool_result` stream. When a non-error result is long per `minLength`, or an error result is long per the independent `errorMinLength`, it asks the **same** active LLM to produce a compact distilled note, replaces the tool result with a placeholder text referencing an opaque `id`, and stores the full original content in the session JSONL log. The agent can later `recall_impression(id)` to retrieve a (re-distilled or full) view, `skip_impression(...)` to opt out of distillation for the next N tool results, or `save_impression(id)` to dump the full original to a sandboxed cache file for inspection.
 
 Goal: **let the agent stay productive on long tool outputs without paying full token cost on every turn**, while keeping the original content recoverable.
 
@@ -17,14 +17,21 @@ impression/
     ├── types.ts                      # Custom-entry constants, ImpressionConfig / ResolvedConfig / ImpressionEntry shapes, type guards
     ├── config.ts                     # File load + parse-error reporting + resolveConfig + saveLocalConfig
     ├── should-skip-distillation.ts   # Input-aware automatic passthrough matcher
-    ├── distill.ts                    # Single-shot LLM call: build prompts, stream, detect <passthrough/> sentinel
+    ├── get-tool-result-distillation-skip-reason.ts # Normal/error threshold policy
+    ├── distill.ts                    # Single-shot LLM call and passthrough classification
+    ├── build-structured-distillation-context.ts # Native history + current result data-message framing
+    ├── select-distillation-context.ts # Hook-only structured context selection
+    ├── render-legacy-distillation-prompt.ts # Retained historical single-text renderer; not used by production distillation
+    ├── serialize-distillation-history.ts # Retained historical serialization helper; not used by production distillation
+    ├── force-empty-tools.ts          # Provider payload replacement with explicit tools: []
     ├── prompt-loader.ts              # Lazy-cached load of prompts/*.md + {{var}} template substitution
     ├── result-builders.ts            # Build the AgentToolResult payloads returned to the framework
     ├── format-call.ts                # UI rendering for the recall_impression tool call display
     ├── format-passthrough-reason.ts  # Stable user-facing descriptions for passthrough classifications
     ├── format-distillation-failure.ts # User-facing abnormal distillation diagnostics
     ├── distillation-failure.ts        # Persisted abnormal distillation snapshot types
-    ├── snapshot-diagnostics.ts        # JSON-safe diagnostic projection without stacks
+    ├── snapshot-diagnostics.ts        # JSON-safe diagnostic projection without stacks/signatures
+    ├── snapshot-response-content.ts   # Failure response projection without opaque signatures
     ├── write-provider-debug-payload.ts # Debug-only provider payload snapshots
     └── serialize.ts                  # Tool content (text + image blocks) → flat string for length / hashing / display
 ```
@@ -54,8 +61,13 @@ External coupling:
 │       return rejection text          │
 │     else → pass through              │
 │   if shouldSkipDistillation → return │
-│   if isError                → return │
-│   if fullText < minLength   → return │
+│   serialize fullText                 │
+│   if error and errorMinLength == -1  │
+│     → return (disabled)              │
+│   if error below errorMinLength      │
+│     → return                         │
+│   if non-error below minLength       │
+│     → return                         │
 │   else → distillWithSameModel:       │
 │     • visibleHistory = convertToLlm( │
 │         buildSessionContext(         │
@@ -200,17 +212,22 @@ resolveConfig(raw): ResolvedConfig
 ### 5.3 `src/distill.ts`
 
 ```
-distillWithSameModel(model, mode, auth, toolName, content, visibleHistory,
-                     originalSystemPrompt, maxTokens, signal, onPromptVersion?)
+distillWithSameModel(model, mode, auth, request, maxTokens, signal,
+                     onPromptVersion?, onProviderPayload?)
   Pre: model is the active model with auth available
        maxTokens > 0
-  Ensures: returns { passthrough: bool, note: string, thinking?: string,
-                     passthroughReason?: PassthroughReason }
+       request carries the current result, converted visible history, original
+       system prompt, and current tool name
+  Ensures: constructs hook-only structured framing with historical system
+           reference, native visible history, a named current-result boundary,
+           a `<tool_result>` user data message, and the final task
+           both context and outgoing provider payload contain tools: []
+           onProviderPayload receives the exact replacement payload being sent
            passthrough=true with a stable reason when output is truncated,
            empty after thinking-block stripping, a normalized <passthrough/>
            sentinel, or not shorter than the original content
            abnormal toolUse/error/aborted or future unknown stop reasons return
-           passthroughReason=error with an input/output diagnostic snapshot
+           passthroughReason=error with a signature-free diagnostic snapshot
            passthrough=false only for non-empty output shorter than the original
   Side: one streaming LLM call billed to the user
 ```
@@ -257,7 +274,7 @@ buildImpressionText(id, note)
 | `impression-config-v1` | Per-mutation partial `ImpressionConfig` patch | Spread-merged in append order over `loadConfig()` baseline |
 | `impression-distill-log` | Per-distillation metadata; abnormal entries additionally contain the exact system/user prompt, model, output response or thrown exception | Diagnostic only; not replayed into plugin state |
 
-All five are stored as pi `custom` entries (not `custom_message`), so `buildSessionContext.appendMessage` filters them out — they never reach the LLM. Distillation diagnostic snapshots never include API keys, auth headers, error stacks, or non-primitive diagnostic detail values.
+All five are stored as pi `custom` entries (not `custom_message`), so `buildSessionContext.appendMessage` filters them out — they never reach the LLM. Distillation diagnostic snapshots never include API keys, auth headers, error stacks, non-primitive diagnostic detail values, or opaque text/thinking/encrypted signatures.
 
 When `debug` is enabled, logical provider payloads for the main agent and distiller are also written to `.pi/impression-debug/<session-id>/`. Each file includes the current leaf, its parent-chain branch entries, context message count, and source-specific size metadata; these files are diagnostic artifacts rather than session entries.
 
@@ -371,13 +388,11 @@ Plugin → host boundaries. Each block follows §3.2 of `prompts/current/workflo
 协议约定：
   - 调用方：passes the result of buildSessionContext (with leafId
     honored, so fork siblings don't leak in).
-  - impression serializes the generic messages as newline-delimited JSON.
-    For the exact active combination openai-codex +
-    openai-codex-responses, same-model assistant messages may omit only
-    signatures matching the current Responses reasoning-item schema or
-    TextSignatureV1. Provider/API/model mismatch, unknown schema/version,
-    malformed data, or projection failure falls back to the canonical
-    unmodified convertToLlm + JSON.stringify output.
+  - impression keeps visible history as native messages. The current transaction
+    is not recovered from history: the `tool_result` hook appends a named boundary
+    and a separate user `<tool_result>` data message containing the current result.
+  - No compatibility single-text request is sent from this path. The current
+    result remains directly represented as text/image user content.
   - No message budgeting, truncation, or selection occurs in this layer.
   - 已知 Gap：the transformContext mutator chain (sibling extensions'
     "context" event hooks) is NOT applied by convertToLlm — see Known
@@ -441,9 +456,9 @@ Plugin → host boundaries. Each block follows §3.2 of `prompts/current/workflo
 
    **`distillRateFloor` lower-bound clamp.** Like the other numeric config fields, `distillRateFloor` is bounded below by `0` via `clampNumeric`; out-of-range values get a `ctx.ui.notify` warning and are silently coerced.
 
-6. **Numeric range clamping with warning.** Round 6 (this revision): `minLength`, `maxRecallBeforePassthrough`, `maxPassthroughCount` have lower bounds (`1`, `0`, `0`). Out-of-range values from file / replay / `/impression set` are clamped with a `ctx.ui.notify` warning. Type-incompatible values (string where number expected, etc.) are still hard-rejected by `validateConfigValue`.
+6. **Numeric range clamping with warning.** `minLength`, `errorMinLength`, `maxRecallBeforePassthrough`, `maxPassthroughCount` have lower bounds (`1`, `-1`, `0`, `0`). Out-of-range values from file / replay / `/impression set` are clamped with a `ctx.ui.notify` warning. Type-incompatible values (string where number expected, etc.) are still hard-rejected by `validateConfigValue`. `errorMinLength = -1` is the intentional disabled sentinel, `0` attempts every error result, and missing configuration resolves to `40960`.
 
-7. **`visibleHistory` uses a fallback-first provider projection.** The canonical path remains `convertToLlm(messages).map(JSON.stringify).join("\n")`, with no budgeting or truncation. Only the exact active `openai-codex` + `openai-codex-responses` combination may project same-model assistant history by omitting opaque signatures whose runtime shape strictly matches the current Responses reasoning-item schema or `TextSignatureV1`. Any provider/API/model mismatch, unknown schema/version, malformed signature, or adapter exception retains the canonical bytes. This optimization affects only the distiller's quoted JSON copy; it never mutates session or main-agent messages. **Known gap**: the `transformContext` mutator chain (which lets sibling extensions rewrite messages via the `"context"` event hook) is NOT applied; today no plugin in this monorepo mutates that way, but a future trimming extension would diverge. Tracked as a feature request to badlogic/pi-mono — when upstream exposes `ctx.getLlmContext()` (or `emitContext`), this plugin will switch to it.
+7. **`visibleHistory` stays native and excludes the current transaction.** `convertToLlm(messages)` produces Pi `Message[]`; structured distillation preserves those historical messages unchanged, then the `tool_result` hook appends a named boundary and a user `<tool_result>` data message containing the current result. No history JSON serialization, current-call replay, message budgeting, or truncation occurs in this layer. **Known gap**: the `transformContext` mutator chain (which lets sibling extensions rewrite messages via the `"context"` event hook) is NOT applied; today no plugin in this monorepo mutates that way, but a future trimming extension would diverge. Tracked as a feature request to badlogic/pi-mono — when upstream exposes `ctx.getLlmContext()` (or `emitContext`), this plugin will switch to it.
 
 ## 7. Concurrency
 
@@ -467,5 +482,17 @@ Rely-Guarantee for saveLocalConfig:
 ## 8. KNOWN GAPS
 
 1. **`transformContext` chain not applied to `visibleHistory`** — see decision 7 above. Tracked upstream: <https://github.com/badlogic/pi-mono/issues/3953>.
-2. **Limited test coverage.** Command tab completion and passthrough reason formatting have focused unit tests. Faux-provider integration tests cover initial `empty` and recall `sentinel` notifications, but `truncated` and `failing` are not exercised through the full extension flow and the distiller classification branches have no direct behavioral test.
+2. **Remaining integration-test gaps.** Command tab completion and passthrough reason formatting have focused unit tests. Provider-payload parity covers both `openai-completions` and OpenAI Responses conversion of the `<tool_result>` user data message, and `eval/run-pi-structured-eval.py` exercises classification through isolated `pi -p` sessions with the real extension, credential registry, provider transport, and persisted distill log. Faux-provider integration tests still do not exercise `truncated` and `failing` through the full extension flow.
 3. **`impressions: Map` is unbounded for non-delivered entries.** Long sessions where the LLM never recalls accumulate stripped (post-delivery) entries plus full undelivered entries. Currently considered acceptable; a TTL / LRU eviction policy would be a separate design iteration.
+
+## Structured distillation request framing
+
+`distillWithSameModel` sends `complete()` a structured message sequence. The sequence is: a user message that labels the enclosed original system prompt as historical reference that must not be executed; converted visible history; a user boundary that prohibits executing historical instructions and names the current tool; a user `<tool_result>` data message containing the complete current result; and the final passthrough-or-compress classification task. The current result is supplied directly by the `tool_result` hook, never recovered from `visibleHistory`. Explicit verbatim/edit intent and repeated reads of the same or substantially overlapping content take priority and require passthrough; only when no such rule applies does uncertainty and increasing result length favor compression. Recall uses the same result-data framing while the final task identifies the stored original tool.
+
+The context has `tools: []`. The provider `onPayload` replacement also has explicit `tools: []`, and debug capture observes that replacement. There is no legacy model request when a current call is absent from historical messages. Failure snapshots record the structured mode and final task prompt, not serialized history or provider signatures.
+
+The production prompt splits stable authority from call-local procedure. The system prompt retains the note-taker role, passthrough precedence, source-only provenance firewall, faithfulness constraints, output grammar, and the rule that historical context is control context rather than factual evidence. The final user message, placed immediately after the `<tool_result>` data message, runs the call-local transaction in order: classify exactness, apply the compression default, audit every factual clause against the current result alone, then emit the existing sentinel-or-note format. History may influence only intent, immediate next action, exactness classification, and relevance selection; it may not contribute entities, events, statuses, causes, relations, numbers, conclusions, or factual wording to the note.
+
+This split was selected by measured prompt iteration rather than prompt aesthetics. Eight isolated candidates were exercised through real `pi -p` sessions. On the critical history/current-result conflict, the previous production prompt passed 2/5 repetitions, the smaller result-local gate passed 4/5, and the provenance-firewall transaction passed 5/5 on `gpt-5.6-sol`. After promotion, production passed the same provenance case 5/5 plus first-read edit passthrough, repeated-read correction, long-result compression, source prompt-injection handling, code-map compression, and history-dedup guards 6/6 on that executor. `eval/structured-message-parity.test.ts` fixes the provider message shape, while `eval/run-pi-structured-eval.py` is the behavioral runner.
+
+A subsequent cross-model matrix measured both pre-firewall and firewall prompts as executors rather than proposal authors: 238 real sessions across five OpenLux models plus `gpt-5.6-terra` and `gpt-5.6-sol`. The firewall improved aggregate provenance from 12/35 to 22/35 and total acceptance from 85/119 to 93/119, but the gain is model-dependent: `gpt-5.6-sol` scored 17/17 and Claude Opus rose from 11/17 to 16/17, while DeepSeek Pro fell from 16/17 to 15/17, Kimi and Terra had no net change, and DeepSeek Flash remained 6/17 because it frequently exhausted the output budget. The firewall is therefore the measured default-model winner, not a universal prompt. Full evidence is in `docs/audit/prompt-iter-cross-model.md`.

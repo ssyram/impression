@@ -29,6 +29,10 @@ export function getDistillerUserTemplate(variant: PromptVariant): string {
 	return getCached(`distiller-user-${variant}.md`);
 }
 
+export function getLegacyDistillerUserTemplate(variant: PromptVariant): string {
+	return getCached(`distiller-user-${variant}-legacy.md`);
+}
+
 export function getImpressionTextTemplate(): string {
 	return getCached("impression-text.md");
 }

@@ -1,0 +1,38 @@
+{
+	"root": false,
+	"$schema": "https://biomejs.dev/schemas/2.3.5/schema.json",
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true
+		}
+	},
+	"formatter": {
+		"enabled": true,
+		"indentStyle": "tab",
+		"indentWidth": 3,
+		"lineWidth": 120
+	},
+	"files": {
+		"includes": [
+			"src/source-indexing/annotation.ts",
+			"src/source-indexing/chunking.ts",
+			"src/source-indexing/code-points.ts",
+			"src/source-indexing/expansion.ts",
+			"src/source-indexing/index.ts",
+			"src/source-indexing/reference-parser.ts",
+			"src/source-indexing/source-collection.ts",
+			"src/source-indexing/source-index.ts",
+			"src/source-indexing/source-provenance.ts",
+			"src/source-indexing/source-indexing.test.ts",
+			"src/source-indexing/range-expansion.test.ts",
+			"src/prepare-source-references.ts",
+			"src/source-reference-prompts.ts",
+			"src/source-reference-pipeline.ts",
+			"src/source-reference-collection.test.ts",
+			"src/source-reference-generated.test.ts",
+			"src/source-reference-pipeline.test.ts",
+			"src/source-reference-types.test.ts"
+		]
+	}
+}
