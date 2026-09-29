@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { describe, it } from "../../../packages/coding-agent/node_modules/vitest/dist/index.js";
+import { describe, it } from "vitest";
 import type { ExtensionUIContext } from "../../../packages/coding-agent/src/core/extensions/index.ts";
 import { type Theme, theme } from "../../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { createHarness, getMessageText } from "../../../packages/coding-agent/test/suite/harness.ts";

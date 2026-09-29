@@ -1,6 +1,6 @@
 # Impression System
 
-没有人干活要先把工作手册背下来；略读一遍，留下“印象”就开工才是正确做法。Impression System (印象系统) 是一个可即插即用的 [pi](https://github.com/badlogic/pi-mono) 扩展：它会使用当前激活的 LLM，将较长的工具结果压缩成简洁的 impression，并保留原始内容，供后续按需召回。
+没有人干活要先把工作手册背下来；略读一遍，留下“印象”就开工才是正确做法。Impression System (印象系统) 是一个可即插即用的 [pi](https://github.com/badlogic/pi-mono) 扩展：它默认使用当前激活的 LLM，也可使用配置的蒸馏模型，将较长的工具结果压缩成简洁的 impression，并保留原始内容，供后续按需召回。
 
 > 提示：如果同时加载 `docker` 插件，Impression 会把累计的 `[impression:data]` 统计更清晰地展示在 docker 侧边栏里；如果没有 docker，则会自动回退为普通 footer 状态显示。
 
@@ -11,7 +11,7 @@
 ## 工作原理
 
 1. **Intercept**：拦截每一个 `tool_result` 事件；当文本长度超过可配置阈值时（默认 2,048 个字符），启动蒸馏。
-2. **Distill**：调用当前激活的模型，并使用专门设计的提示词，告诉模型“你正在压缩自己的记忆”。模型会产出一段简短笔记，保留下一步真正需要的信息。
+2. **Distill**：默认调用当前模型；设置 `distillModel` 后改用匹配的蒸馏模型，以专用提示词产出简短笔记。
 3. **Replace**：用压缩后的 impression 替换原始工具结果。
 4. **Recall**：注册一个 `recall_impression` 工具，代理可以按需取回原始内容。首次召回时，模型会结合更新后的上下文重新蒸馏；达到配置的召回次数后，则直接返回完整原文。
 
@@ -76,14 +76,19 @@ pi --extension /path/to/impression/index.ts
 
 ```text
 impression/
-├── index.ts                  # 扩展入口（连接事件与工具）
+├── index.ts                  # 仅导出扩展入口
+├── extension.ts              # 装配会话内扩展状态与事件
 ├── src/
 │   ├── types.ts              # 接口、类型守卫、常量
 │   ├── config.ts             # 配置加载与解析
 │   ├── should-skip-distillation.ts # 按输入匹配自动 passthrough
 │   ├── serialize.ts          # 内容序列化（文本 + 图片）
 │   ├── prompt-loader.ts      # 加载并填充 prompt 模板
-│   ├── distill.ts            # 蒸馏逻辑（调用 LLM）
+│   ├── distill.ts            # 蒸馏请求及结果分类
+│   ├── select-distillation-model.ts # 模糊匹配蒸馏模型
+│   ├── request-fixed-distillation.ts # 固定 provider 请求
+│   ├── register-tool-result-hook.ts # 首次蒸馏钩子
+│   ├── register-recall-impression.ts # Recall 重蒸馏
 │   ├── format-call.ts        # UI：格式化 recall 的工具调用展示
 │   └── result-builders.ts    # 构建 impression / passthrough 的工具结果
 ├── prompts/                                # prompts 全部是 .md
@@ -108,6 +113,7 @@ impression/
 ```json
 {
   "enabled": true,
+  "distillModel": "_SELF",
   "debug": false,
   "debug:distill-mode": "third-person",
   "skipDistillation": {
@@ -126,19 +132,20 @@ impression/
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `enabled` | `boolean` | `true` | 总开关。`false` 时所有工具结果不被蒸馏，直接透传。 |
+| `distillModel` | `string` | `"_SELF"` | `_SELF` 使用当前模型；否则填写 `[provider/]model[:effort]`。在模型目录中模糊匹配，优先当前 provider 的匹配项，否则取排序首项；不支持的 effort 留空，模型未命中则透传原文。要固定账号应写明 provider。 |
 | `debug` | `boolean` | `false` | 开启调试通知与调试用选项。 |
 | `debug:distill-mode` | `"first-person" \| "third-person"` | 未设置 | 调试用，强制 distiller 使用某一种 prompt 模式。仅在 `debug: true` 时生效，否则被忽略并给出警告。 |
 | `skipDistillation` | `Record<string, Record<string, string>>` | `{}` | 工具名到输入条件的映射；全部条件匹配时才透传。工具条件为 `{}` 时，所有调用均透传；非空条件要求对应输入存在且为字符串。普通 pattern 精确相等；`/…/` 是 JavaScript 正则（例如 `{ "subagent": { "action": "/^(list|status)$/" } }`）。缺少参数、参数非字符串或正则无效时均不匹配。 |
 | `minLength` | `number` | `2048` | 非错误结果触发蒸馏所需的最小文本长度（字符数）。 |
 | `errorMinLength` | `number` | `40960` | 错误结果触发蒸馏的独立最小长度。设为 `-1` 禁用错误结果蒸馏；设为 `0` 则每个错误结果都尝试蒸馏。 |
-| `maxRecallBeforePassthrough` | `number` | `1` | 切换为完整透传前，召回时返回"重新蒸馏笔记"的最大次数。**`0` 表示每次召回都直接给完整原文** —— 当你希望 agent 在初次蒸馏后总是拿到精确文本时用这个。 |
-| `maxPassthroughCount` | `number` | `2` | `skip_impression count=N` 的硬上限。 |
+| `maxRecallBeforePassthrough` | `number` | `1` | 完整透传前可返回新笔记的 Recall 次数。默认 `1`：首次重蒸馏并交付笔记，第二次交付原文；`0` 则首次直接交原文，不调用重蒸馏模型。 |
+| `maxPassthroughCount` | `number` | `2` | 每次新领取 `skip_impression count=N` 的上限；事后降低上限不会追回已经授予且尚未使用的次数。 |
 | `distillRateFloor` | `number` | `0.02` | 蒸馏 output 预算的 per-char 系数。蒸馏调用的有效 `max_tokens` = `clamp(originalLength * distillRateFloor, 1024, model.maxTokens \|\| 8192)`。原文越长预算按比例越宽（让笔记可以多写一点），但永远受模型的单次 output 上限封顶（拿不到时用 `8192` fallback）。实际笔记长度由 prompt 里的长度约束控制，**不**由这个数字控制——这只是 safety ceiling。下限：`0`。 |
 | `showData` | `boolean` | `false` | 显示每次蒸馏的字符数据，格式为 `[impression:data] XXX / YYY = ZZ%`；其中展示值使用 `k`/`M` 等紧凑格式并保留两位小数，但比例始终基于底层精确字符数计算；底部状态会持续累积显示 `impression / original`。 |
 
 > **数值越界会被告警并截到最小值。** 数值字段的下限：`minLength ≥ 1`、`errorMinLength ≥ -1`、`maxRecallBeforePassthrough ≥ 0`、`maxPassthroughCount ≥ 0`、`distillRateFloor ≥ 0`。低于下限的值（无论来自文件、会话日志重放还是 `/impression set`）会被截到下限，并通过 `ctx.ui.notify` 发出 warning。`.pi/impression.json` 的 JSON 解析错误也会在 session 启动时作为 warning 浮出，并把该文件忽略。
 
-> **成本说明。** 每次蒸馏都会调用 agent 当前正在用的同一个 provider/model，input 是 agent 的 system prompt + 可见消息历史 + 工具结果。Recall 重蒸馏也是同样的开销。在工具结果普遍较长的长会话里，这相当于 token 成本翻倍（每个长 tool result 都多一次往返）。
+> **成本说明。** 每次蒸馏均增加一次模型调用，默认使用当前模型；设置 `distillModel` 后使用选定模型。输入仍包括 agent 的 system prompt、可见历史和工具结果；Recall 重蒸馏也会额外调用。实际延迟和费用取决于目标 provider/model，换模型本身不保证更快、更省。
 >
 > 蒸馏请求的 `max_tokens` 预算 = `clamp(originalLength * distillRateFloor, 1024, model.maxTokens || 8192)`。模型单次 output 上限封顶（拿不到时 8192 fallback），per-char 系数让预算随输入扩大，1024 floor 保证小输入下模型也有空间。实际笔记长度由 prompt 约束控制，公式只是 safety ceiling。
 >
@@ -165,9 +172,9 @@ impression/
 | `/impression set [--persistent] NAME VALUE` | 在当前会话中设置某一字段。`VALUE` 按 JSON 解析并按字段类型校验。带 `--persistent` 时还会把改动写回 `.pi/impression.json`（**后台异步**写入，失败会通过 warning 通知）。 |
 | `/impression tool1,tool2,...` | 简写：为列出的工具添加空 `SkipDistillation` 条件，使本会话中这些工具的所有调用都透传。**必须带逗号**（或用引号），单个裸词被视为未知子命令。 |
 
-**字段名匹配**：`NAME` 大小写、分隔符不敏感。匹配方法是：lowercase 并去掉所有非字母数字字符，然后既比对 JSON 文件键也比对 PascalCase 显示名。`MaxRecall` / `maxRecall` / `max-recall` / `max_recall` / `"max recall"` / `max:recall` / `maxrecall` / `maxRecallBeforePassthrough` 都解析到同一字段。显示名（用于通知和帮助文本）一律 PascalCase：`Enabled`、`Debug`、`ShowData`、`MinLength`、`ErrorMinLength`、`MaxRecall`、`MaxPassthroughCount`、`SkipDistillation`、`DebugDistillMode`。
+**字段名匹配**：`NAME` 大小写、分隔符不敏感。匹配方法是：lowercase 并去掉所有非字母数字字符，然后既比对 JSON 文件键也比对 PascalCase 显示名。`MaxRecall` / `maxRecall` / `max-recall` / `max_recall` / `"max recall"` / `max:recall` / `maxrecall` / `maxRecallBeforePassthrough` 都解析到同一字段。显示名（用于通知和帮助文本）一律 PascalCase：`Enabled`、`Debug`、`ShowData`、`MinLength`、`ErrorMinLength`、`MaxRecall`、`MaxPassthroughCount`、`SkipDistillation`、`DebugDistillMode`、`DistillModel`。
 
-**值类型校验**：`enabled` / `debug` / `showData` → 布尔；长度 / 比例字段 → 有限数字；`skipDistillation` → 从精确工具名到字符串输入 pattern 对象的 JSON 映射（例：`{ "read": {}, "subagent": { "action": "list" } }`）；`debug:distill-mode` → `"first-person"` 或 `"third-person"`。类型不匹配直接拒绝并给出原因。
+**值类型校验**：`enabled` / `debug` / `showData` → 布尔；长度 / 比例字段 → 有限数字；`skipDistillation` → 从精确工具名到字符串输入 pattern 对象的 JSON 映射（例：`{ "read": {}, "subagent": { "action": "list" } }`）；`debug:distill-mode` → `"first-person"` 或 `"third-person"`；`distillModel` → 非空字符串。类型不匹配直接拒绝并给出原因。
 
 > 未知子命令会打印 warning 并附上完整命令帮助，不会静默吞下拼错的命令。
 
@@ -187,9 +194,9 @@ impression/
 
 ### 启用后会看到什么
 
-- **状态栏** 会在压缩过程中显示 `[impression] Distilling N chars with provider/model...`
+- **状态栏** 会在压缩过程中显示 `[impression] Distilling N chars with provider/model...`；`debug: true` 时首次及 Recall 另显示实际选择的 provider/model、请求的 effort（未附带时显示 `null`），支持 payload 回调的 provider 也会在 debug 记录中写入这些字段。Codex 适配器会把未指定档位编码为请求体的 `"none"`，不是 `low`。
 - 对被跳过的结果会显示 **通知**（例如内容太短、命中跳过列表，或错误结果低于 `errorMinLength` / 以 `-1` 禁用）
-- **工具结果** 会被替换为 `🧠 [MY INTERNAL MEMORY | ID: ...]` 这类格式
+- **工具结果** 会被替换为 `🧠 [WORKING MEMORY · id]` 格式
 - 代理工具列表中会出现 **`recall_impression` 工具**
 - 如果加载了 **`docker` 插件**，累计的 **`[impression:data]`** 会展示在 docker 中；否则继续显示在 footer 里
 
@@ -208,7 +215,7 @@ impression/
 
 ## 自定义提示词
 
-所有 prompt 都以 Markdown 文件形式存放在 `prompts/` 目录中，可以直接编辑以调整蒸馏行为。蒸馏 prompt 有 `first-person` / `third-person` 两个变体，运行时根据活动模型自动选择（或在 `debug: true` 时通过 `debug:distill-mode` 强制指定）。
+所有 prompt 都以 Markdown 文件形式存放在 `prompts/` 目录中，可以直接编辑以调整蒸馏行为。蒸馏 prompt 默认使用 `third-person`，可在 `debug: true` 时通过 `debug:distill-mode` 指定变体；切换 `distillModel` 不会自动切换提示词。
 
 **模板变量**（运行时替换）：
 

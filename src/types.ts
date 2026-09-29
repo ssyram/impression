@@ -49,6 +49,7 @@ export function isSkipDistillationRules(value: unknown): value is SkipDistillati
 }
 
 export interface ImpressionConfig {
+	distillModel?: string;
 	"debug:distill-mode"?: PromptVariant;
 	skipDistillation?: SkipDistillationRules;
 	minLength?: number;
@@ -62,6 +63,7 @@ export interface ImpressionConfig {
 }
 
 export interface ResolvedConfig {
+	distillModel: string;
 	debugDistillMode?: PromptVariant;
 	skipDistillation: SkipDistillationRules;
 	minLength: number;

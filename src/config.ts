@@ -8,6 +8,7 @@ import type { ImpressionConfig, ResolvedConfig } from "./types.js";
 
 export function resolveConfig(raw: ImpressionConfig): ResolvedConfig {
 	return {
+		distillModel: raw.distillModel ?? "_SELF",
 		debugDistillMode: raw["debug:distill-mode"],
 		skipDistillation: raw.skipDistillation ?? {},
 		minLength: raw.minLength ?? DEFAULT_MIN_LENGTH,

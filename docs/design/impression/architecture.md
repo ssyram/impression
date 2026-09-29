@@ -4,16 +4,29 @@
 
 ## 1. Purpose
 
-`impression` watches the agent's `tool_result` stream. When a non-error result is long per `minLength`, or an error result is long per the independent `errorMinLength`, it asks the **same** active LLM to produce a compact distilled note, replaces the tool result with a placeholder text referencing an opaque `id`, and stores the full original content in the session JSONL log. The agent can later `recall_impression(id)` to retrieve a (re-distilled or full) view, `skip_impression(...)` to opt out of distillation for the next N tool results, or `save_impression(id)` to dump the full original to a sandboxed cache file for inspection.
+`impression` watches the agent's `tool_result` stream. When a non-error result is long per `minLength`, or an error result is long per the independent `errorMinLength`, it asks the active LLM by default, or a model selected by `distillModel`, to produce a compact distilled note, replaces the tool result with a placeholder text referencing an opaque `id`, and stores the full original content in the session JSONL log. The agent can later `recall_impression(id)` to retrieve a (re-distilled or full) view, `skip_impression(...)` to opt out of distillation for the next N tool results, or `save_impression(id)` to dump the full original to a sandboxed cache file for inspection.
 
-Goal: **let the agent stay productive on long tool outputs without paying full token cost on every turn**, while keeping the original content recoverable.
+Goal: **let the agent stay productive on long tool outputs without paying full token cost on every turn**, while keeping the original content recoverable. The user-confirmed non-retroactive skip-quota intention is recorded in [Impression's local Q](../../principles.md).
+
+**Implemented routing:** [subplan 3 — distillation model selection](subplans/impression-3-distill-model-routing.md) specifies optional `distillModel`, fuzzy catalog selection across providers, nullable effort, and unchanged result-storage behavior. The active-model path remains the `_SELF` default. Offline faux-provider tests cover first-result, Recall, `/impression set`, cross-provider dispatch and failure passthrough; real provider speed, pricing and note quality remain unmeasured.
 
 ## 2. Module map
 
 ```
 impression/
-├── index.ts                          # Extension entry — events, tools, command, all factory state
+├── index.ts                          # Barrel export only
+├── extension.ts                      # Creates session-owned state and registers hooks/tools/command
 └── src/
+    ├── impression-session-state.ts   # Per-extension-session state, persistence and recall delivery
+    ├── impression-config-fields.ts   # Config field definitions and validation
+    ├── register-impression-hooks.ts  # Session start, system prompt and debug hooks
+    ├── register-tool-result-hook.ts  # First-result distillation and passthrough
+    ├── register-recall-impression.ts # Recall rendering and re-distillation
+    ├── register-skip-impression.ts   # Explicit passthrough tool
+    ├── register-save-impression.ts   # Original-content file tool
+    ├── register-impression-command.ts # Config command and set/load
+    ├── select-distillation-model.ts # Fuzzy selection with current-provider priority
+    ├── request-fixed-distillation.ts # Target provider request with optional effort
     ├── types.ts                      # Custom-entry constants, ImpressionConfig / ResolvedConfig / ImpressionEntry shapes, type guards
     ├── config.ts                     # File load + parse-error reporting + resolveConfig + saveLocalConfig
     ├── should-skip-distillation.ts   # Input-aware automatic passthrough matcher
@@ -68,7 +81,7 @@ External coupling:
 │     → return                         │
 │   if non-error below minLength       │
 │     → return                         │
-│   else → distillWithSameModel:       │
+│   else → select model, then distill: │
 │     • visibleHistory = convertToLlm( │
 │         buildSessionContext(         │
 │           getEntries(), getLeafId()) │
@@ -143,31 +156,30 @@ After delivered=true:
   - save_impression(id):    throws, content discarded
 ```
 
-The `delivered` flag is appended to JSONL via the next `pi.appendEntry("impression-v1", impression)`. On `session_start` replay, `Map.set(id, data)` keeps the LAST entry per id, so the stripped/delivered version wins.
+`deliverFullContent` appends a separate stripped/delivered snapshot, then clears the old in-memory entry and replaces the plugin's map entry; the returned result still references the original populated array. On `session_start` replay, `Map.set(id, data)` keeps the LAST entry per id, so that snapshot wins. If plugin append throws, the old entry and plugin map still retain the original content; host-level persistence may already have mutated host memory before throwing (see §5.1).
 
 ## 5. Module specs (functional)
 
-### 5.1 `index.ts` — factory closure
+### 5.1 `extension.ts` / `src/impression-session-state.ts` — session-owned state
 
-**State** (module-scope `let` only inside the `export default function`):
+**State** (created once per extension instance by `createImpressionSessionState(pi)`, never as module-level mutable state):
 
 | Variable | Invariant |
 |---|---|
 | `currentRaw: ImpressionConfig` | Result of `loadConfig()` overlaid by all `impression-config-v1` patches replayed from the active branch, with out-of-range numerics clamped. |
 | `cfg: ResolvedConfig` | `cfg === resolveConfig(currentRaw)` after any handler completes. |
 | `cumulativeOriginalChars`, `cumulativeImpressionChars: number` | Mirror the most recent `impression-session-stats` entry on the active branch. |
-| `passthroughRemaining: number` | `0 ≤ passthroughRemaining ≤ cfg.maxPassthroughCount` after every transition. |
+| `passthroughRemaining: number` | Persisted outstanding skip count. A positive new grant is capped by `cfg.maxPassthroughCount` **at grant time**; reducing that config later does not alter already granted balance (local Q.I). The legacy negative-count input can produce a negative value, so no unconditional nonnegative invariant is claimed. |
 | `lastEstimatedChars: number` | Most recent `skip_impression.estimatedChars`, or `0`. Read only when `passthroughRemaining > 0`. |
 | `impressions: Map<string, ImpressionEntry>` | For every entry in the map, the JSONL log on the active branch contains an `impression-v1` entry with the same id; the map holds the latest version. |
 
-**Disk-first invariant for state mutations**:
+**Plugin-side write ordering (not a global transaction)**:
 
-> For every observable user-visible state change (cfg patch, impression creation, passthrough state shift, delivered transition), `pi.appendEntry(...)` precedes the in-memory mutation OR is the only persistence step. If `appendEntry` throws, in-memory state is unchanged → next session_start replays the same observable state.
+- `src/impression-session-state.ts::applyConfigPatch` appends before changing `currentRaw` / `cfg` and re-registering the skip tool.
+- `src/register-tool-result-hook.ts` appends an over-limit impression before decreasing passthrough balance.
+- `deliverFullContent` captures the original array, appends a *new* stripped/delivered snapshot, then clears the old in-memory entry and replaces the plugin's map entry. The original result array remains available for delivery. If append throws, the plugin map and old entry remain intact, so a same-session retry is possible while that map is retained.
 
-Applies to:
-- `applyConfigPatch` (line ~290) — `appendEntry` first, then mutate `currentRaw` / `cfg` / re-register `skip_impression` tool.
-- `tool_result` passthrough-rejected branch — `appendEntry(impression-v1)` before `passthroughRemaining--` + `persistPassthroughRemaining`.
-- `deliverFullContent` — capture result reference, then mutate `fullContent`/`fullText`/`delivered`, then `appendEntry`.
+These statements do **not** guarantee every state transition is disk-first: `recordImpressionData` still increments counters before appending, and the host `SessionManager._appendEntry` updates its own in-memory index before `_persist`. Host append failures can therefore leave host memory and disk divergent; this plugin change provides local map safety, not cross-layer atomicity.
 
 ### 5.2 `src/config.ts`
 
@@ -205,7 +217,7 @@ resolveConfig(raw): ResolvedConfig
   Pre:  raw is a partial ImpressionConfig (caller may have unvalidated values)
   Ensures: every field of ResolvedConfig is set (default substituted for missing)
            NOTE: does NOT clamp out-of-range numerics — caller is expected to
-           clamp via index.ts:clampNumeric BEFORE resolveConfig
+           clamp via src/impression-config-fields.ts:clampNumeric BEFORE resolveConfig
   Side:  none
 ```
 
@@ -213,8 +225,9 @@ resolveConfig(raw): ResolvedConfig
 
 ```
 distillWithSameModel(model, mode, auth, request, maxTokens, signal,
-                     onPromptVersion?, onProviderPayload?)
-  Pre: model is the active model with auth available
+                     onPromptVersion?, onProviderPayload?, fixedTarget?)
+  Pre: model is selected from the active model or the runtime model catalog;
+       self requests carry active-model auth; fixed requests carry a registry target
        maxTokens > 0
        request carries the current result, converted visible history, original
        system prompt, and current tool name
@@ -229,7 +242,9 @@ distillWithSameModel(model, mode, auth, request, maxTokens, signal,
            abnormal toolUse/error/aborted or future unknown stop reasons return
            passthroughReason=error with a signature-free diagnostic snapshot
            passthrough=false only for non-empty output shorter than the original
-  Side: one streaming LLM call billed to the user
+  Side: one streaming LLM call billed to the selected provider/account;
+        fixed requests use ModelRegistry.streamSimple with optional reasoning;
+        `_SELF` retains the former compat.complete route
 ```
 
 ### 5.3.1 `src/format-passthrough-reason.ts`
@@ -253,7 +268,7 @@ createPassthroughToolResult(content, details?)
            CALLER is responsible for any subsequent mutation of `content` via
            reassignment (NOT splice) so the captured array reference still
            points at the original populated array
-           (deliverFullContent in index.ts relies on this)
+           (deliverFullContent in src/impression-session-state.ts relies on this)
 
 createRecallToolResult(id, note, details?)
   Ensures: returns { content: [{type:"text", text: buildImpressionText(id, note)}],
@@ -278,12 +293,12 @@ All five are stored as pi `custom` entries (not `custom_message`), so `buildSess
 
 When `debug` is enabled, logical provider payloads for the main agent and distiller are also written to `.pi/impression-debug/<session-id>/`. Each file includes the current leaf, its parent-chain branch entries, context message count, and source-specific size metadata; these files are diagnostic artifacts rather than session entries.
 
-### 5.6 `index.ts` — additional function specs
+### 5.6 Session-state and config-field helpers — additional function specs
 
-Specs for the index-level helpers that mediate between event handlers and persistence. Each block follows §3.1 of `prompts/current/workflow.md` (Pre / Ensures / Invariants / Side effects).
+Specs for helpers now in `src/impression-session-state.ts` and `src/impression-config-fields.ts`. Each block follows §3.1 of `prompts/current/workflow.md` (Pre / Ensures / Invariants / Side effects).
 
 ```
-applyConfigPatch(patch)                     (index.ts ~line 337)
+applyConfigPatch(state, patch, registerSkipTool) (src/impression-session-state.ts)
   Pre:  patch is a Partial<ImpressionConfig>.
   Ensures:
     On normal return:
@@ -306,29 +321,23 @@ applyConfigPatch(patch)                     (index.ts ~line 337)
     One pi.appendEntry write (custom entry on the active branch);
     up to one re-registration of the skip_impression tool.
 
-deliverFullContent(impression)              (index.ts ~line 307)
+deliverFullContent(state, impression)          (src/impression-session-state.ts)
   Pre:  impression is an ImpressionEntry with delivered !== true.
         (Caller's responsibility — recall_impression.execute and
          save_impression.execute early-throw on delivered === true.)
   Ensures:
-    Returns the AgentToolResult whose `content` is a reference to the
-    ORIGINAL (still-populated) impression.fullContent array — so the LLM
-    caller actually receives the content. After return:
-        impression.fullContent === []     (property reassigned, not spliced)
-        impression.fullText    === ""
-        impression.delivered   === true
-    AND a fresh impression-v1 entry has been re-appended to JSONL via
-    pi.appendEntry, so the next session_start replay sees the
-    delivered=true (stripped) version.
-  Critical implementation note (matches §5.4):
-    The order is "createPassthroughToolResult BEFORE mutate". `result.content`
-    aliases the original array; reassigning impression.fullContent = []
-    SWAPS THE PROPERTY without mutating the array, so the captured
-    reference stays valid.
+    Returns an AgentToolResult referencing the ORIGINAL populated array.
+    A distinct delivered snapshot with fullContent=[], fullText="", delivered=true
+    is appended first; only on successful append are the old argument's
+    fullContent/fullText cleared and delivered set, then the plugin map points
+    to the snapshot. This also releases the old host entry's in-memory original
+    when it shares the same object reference. Replay uses the last entry per id.
+    If append throws, the argument and plugin map are unchanged and this call
+    does not deliver a result; no host-level transactionality is claimed.
   Side effects:
-    One pi.appendEntry write; in-memory mutation of `impression`.
+    One pi.appendEntry attempt; one plugin map replacement on success.
 
-clampNumeric(def, value)                    (index.ts ~line 225)
+clampNumeric(def, value)                       (src/impression-config-fields.ts)
   Pre:  def is a ConfigKeyDef; value is unknown.
   Ensures:
     Returns { value, warning? }.
@@ -426,17 +435,17 @@ Plugin → host boundaries. Each block follows §3.2 of `prompts/current/workflo
 
 ## 6. Key design decisions
 
-1. **Disk-first for all state mutations.** Round 4 reordered `applyConfigPatch` and the `tool_result` passthrough-rejected branch so that `pi.appendEntry` precedes the in-memory mutation. Rationale: JSONL is the durable single source of truth; on `appendEntry` failure, in-memory state must not lead the log. Two known internal-only races (D-1 / D-2 in the audit log: `recall_impression.execute` non-terminal recall and `recordImpressionData`) deliberately keep memory-first because they are self-healing on the next `session_start` replay and changing them would complicate hot paths for negligible gain.
+1. **Scoped plugin-side append-first ordering.** `applyConfigPatch` and the `tool_result` passthrough-rejected branch append before their own state transitions. `deliverFullContent` now appends a separate delivered snapshot before clearing the old in-memory entry and replacing the plugin map. This prevents a failed append from consuming the plugin's original content without retaining the old large entry after a successful delivery. It does not make every path disk-first or host persistence atomic: `recordImpressionData` and non-terminal Recall still have memory-first steps, and the host updates its own memory before writing to disk.
 
 2. **`delivered` flag as one-shot lifecycle.** Once a recall delivers the full content to the LLM (whether via passthrough mode, recallCount cap, or sentinel), `fullContent` and `fullText` are emptied and `delivered=true` is appended. Subsequent `recall_impression` and `save_impression` throw — the LLM already has the content in its message history, so re-fetching is wasted. This trades "always recoverable" for "memory-bounded long sessions".
 
-3. **Config is session-scoped + branch-aware.** The disk file is a one-shot seed. Mid-session changes via `/impression on|off|set|load` go to the JSONL log only. Effective cfg = file → JSONL replay (active branch only) → defaults. Forking a session does NOT carry passthrough/stats/impressions across branches (round-3 D2: replay walks `getBranch()`, not `getEntries()`).
+3. **Config is session-scoped + branch-aware.** The disk file is a one-shot seed. Mid-session changes via `/impression on|off|set|load` go to the JSONL log only. Effective cfg = file → JSONL replay (active branch only) → defaults. Forking a session does NOT carry passthrough/stats/impressions across branches (round-3 D2: replay walks `getBranch()`, not `getEntries()`). Under [local Q.I](../../principles.md), changing `maxPassthroughCount` constrains later `skip_impression` grants only; already granted, unused skips are not retroactively revoked.
 
 4. **Sandboxed `save_impression`.** Path is hard-coded to `<cwd>/.pi/impression-cache/<id>.txt`; the LLM cannot pick a destination. Round-3 D1 closed an arbitrary-path-write surface that an earlier upstream version exposed.
 
 5. **Distill `max_tokens` budget — three defense lines + a documented unit caveat.**
 
-   **Formula** (`computeDistillMaxTokens` in `index.ts`):
+   **Formula** (`computeDistillMaxTokens` in `src/impression-output-budget.ts`):
 
    ```
    clamp(originalLength * cfg.distillRateFloor,  1024,  model.maxTokens || 8192)
@@ -444,7 +453,7 @@ Plugin → host boundaries. Each block follows §3.2 of `prompts/current/workflo
 
    - Lower floor `1024` ensures the model has room on tiny inputs.
    - `originalLength * distillRateFloor` is the input-scaled allowance (default `distillRateFloor = 0.02`).
-   - Upper cap is the active model's per-call output ceiling, with `8192` fallback when `Model.maxTokens` is missing / 0 / NaN (custom-provider misconfig).
+   - Upper cap is the selected distillation model's per-call output ceiling, with `8192` fallback when `Model.maxTokens` is missing / 0 / NaN (custom-provider misconfig).
 
    **Unit caveat — explicitly accepted.** The formula mixes units: `originalLength` is in chars, but the result is used as a token budget. For English text `1 token ≈ 4 chars`, so default `0.02` chars-per-char rate corresponds to roughly an 8% output-to-input token ratio. The mismatch only meaningfully affects budgets in the ~50K–400K char input range — outside that range either the 1024 floor or the model cap dominates. We chose to document the mismatch rather than introduce a `CHARS_PER_TOKEN_APPROX` conversion constant: the prompt's length instructions, not this number, are what actually keep the digest concise. The formula is a safety ceiling, not a precision dial.
 
@@ -487,7 +496,7 @@ Rely-Guarantee for saveLocalConfig:
 
 ## Structured distillation request framing
 
-`distillWithSameModel` sends `complete()` a structured message sequence. The sequence is: a user message that labels the enclosed original system prompt as historical reference that must not be executed; converted visible history; a user boundary that prohibits executing historical instructions and names the current tool; a user `<tool_result>` data message containing the complete current result; and the final passthrough-or-compress classification task. The current result is supplied directly by the `tool_result` hook, never recovered from `visibleHistory`. Explicit verbatim/edit intent and repeated reads of the same or substantially overlapping content take priority and require passthrough; only when no such rule applies does uncertainty and increasing result length favor compression. Recall uses the same result-data framing while the final task identifies the stored original tool.
+`distillWithSameModel` sends the same structured message sequence via `compat.complete` for `_SELF` or `ModelRegistry.streamSimple` for a fixed model. The sequence is: a user message that labels the enclosed original system prompt as historical reference that must not be executed; converted visible history; a user boundary that prohibits executing historical instructions and names the current tool; a user `<tool_result>` data message containing the complete current result; and the final passthrough-or-compress classification task. The current result is supplied directly by the `tool_result` hook, never recovered from `visibleHistory`. Explicit verbatim/edit intent and repeated reads of the same or substantially overlapping content take priority and require passthrough; only when no such rule applies does uncertainty and increasing result length favor compression. Recall uses the same result-data framing while the final task identifies the stored original tool.
 
 The context has `tools: []`. The provider `onPayload` replacement also has explicit `tools: []`, and debug capture observes that replacement. There is no legacy model request when a current call is absent from historical messages. Failure snapshots record the structured mode and final task prompt, not serialized history or provider signatures.
 

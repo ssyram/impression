@@ -1,8 +1,10 @@
-import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, ImageContent, Message, Model, ProviderHeaders, TextContent, ThinkingLevel } from "@earendil-works/pi-ai";
 import { complete } from "@earendil-works/pi-ai/compat";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { DistillationContextSnapshot, DistillationFailure } from "./distillation-failure.js";
 import { forceEmptyTools } from "./force-empty-tools.js";
 import { prepareSourceReferences } from "./prepare-source-references.js";
+import { requestFixedDistillation } from "./request-fixed-distillation.js";
 import { getDistillerSystemPrompt, getDistillerUserTemplate, renderTemplate } from "./prompt-loader.js";
 import { selectDistillationContext } from "./select-distillation-context.js";
 import { serializeContent } from "./serialize.js";
@@ -35,12 +37,13 @@ function resolveVariant(_model: Model<Api>, debugDistillMode?: PromptVariant): P
 export async function distillWithSameModel(
 	model: Model<Api>,
 	debugDistillMode: PromptVariant | undefined,
-	auth: { apiKey?: string; headers?: Record<string, string> },
+	auth: { apiKey?: string; headers?: ProviderHeaders },
 	request: DistillationRequest,
 	maxTokens: number,
 	signal?: AbortSignal,
 	onPromptVersion?: (version: string) => void,
 	onProviderPayload?: (payload: unknown) => void,
+	fixedTarget?: { registry: Pick<ModelRegistry, "streamSimple">; effort?: ThinkingLevel },
 ): Promise<DistillationResult> {
 	const variant = resolveVariant(model, debugDistillMode);
 	onPromptVersion?.(variant);
@@ -77,13 +80,16 @@ export async function distillWithSameModel(
 
 	let response: AssistantMessage;
 	try {
-		response = await complete(model, selection.context, {
+		const options = {
 			apiKey: auth.apiKey,
 			headers: auth.headers,
 			maxTokens,
 			signal,
-			onPayload: (payload) => forceEmptyTools(payload, onProviderPayload),
-		});
+			onPayload: (payload: unknown) => forceEmptyTools(payload, onProviderPayload),
+		};
+		response = fixedTarget
+			? await requestFixedDistillation(fixedTarget.registry, model, selection.context, options, fixedTarget.effort)
+			: await complete(model, selection.context, options);
 	} catch (error) {
 		const exception =
 			error instanceof Error

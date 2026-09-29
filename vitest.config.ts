@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "../../packages/coding-agent/node_modules/vitest/dist/config.js";
+import { defineConfig, mergeConfig } from "vitest/config";
+import baseConfig from "../../vitest.base.ts";
 
 const aiSrcIndex = fileURLToPath(new URL("../../packages/ai/src/index.ts", import.meta.url));
 const aiSrcCompat = fileURLToPath(new URL("../../packages/ai/src/compat.ts", import.meta.url));
@@ -13,7 +14,7 @@ const codingAgentSrcIndex = fileURLToPath(new URL("../../packages/coding-agent/s
 const generatedModelDataDir = fileURLToPath(new URL("../../packages/ai/src/providers/data", import.meta.url));
 const emptyModelDataId = "\0impression-empty-model-data";
 
-export default defineConfig({
+export default mergeConfig(baseConfig, defineConfig({
 	test: {
 		environment: "node",
 		testTimeout: 30_000,
@@ -47,4 +48,4 @@ export default defineConfig({
 			},
 		},
 	],
-});
+}));

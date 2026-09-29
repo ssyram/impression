@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "../../../packages/coding-agent/node_modules/vitest/dist/index.js";
+import { describe, it } from "vitest";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";

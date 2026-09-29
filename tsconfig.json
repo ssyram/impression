@@ -1,0 +1,14 @@
+{
+	"extends": "../../tsconfig.json",
+	"include": [
+		"index.ts",
+		"extension.ts",
+		"src/select-distillation-model.test.ts",
+		"src/request-fixed-distillation.test.ts",
+		"src/resolve-selected-distillation-model.test.ts",
+		"src/deliver-full-content.test.ts",
+		"src/distill-model-routing.integration.test.ts",
+		"src/recall-limit-delivery.integration.test.ts",
+		"../../packages/coding-agent/src/utils/highlight-js.d.ts"
+	]
+}
