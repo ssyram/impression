@@ -133,6 +133,7 @@ export interface DistillLogEntry {
 	toolName: string;
 	passthrough: boolean;
 	passthroughReason?: PassthroughReason;
+	passthroughReasonText?: string;
 	originalChars: number;
 	noteChars: number;
 	thinkingChars: number;

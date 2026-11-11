@@ -140,6 +140,40 @@ describe("passthrough notifications", () => {
 		}
 	});
 
+	it("reports a deliberate LLM passthrough with the text above the sentinel as its reason", async () => {
+		const notifications: Notification[] = [];
+		const harness = await createNotificationHarness(notifications);
+		try {
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("long_output", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("A\n\nB\n\n\n<passthrough/>"),
+			fauxAssistantMessage("done"),
+			]);
+
+			await harness.session.prompt("run the long output tool");
+
+			assert.ok(
+				notifications.some(
+					(notification) =>
+						notification.message === "[impression] Passthrough for long_output: A\n\nB",
+				),
+				JSON.stringify({ notifications, pendingResponses: harness.getPendingResponseCount() }),
+			);
+			const entry = harness.sessionManager
+				.getEntries()
+				.find((candidate) => candidate.type === "custom" && candidate.customType === DISTILL_LOG_ENTRY_TYPE);
+			assert.ok(entry);
+			if (entry.type !== "custom") throw new Error("Expected a custom distillation log entry");
+			const log = entry.data as { passthrough?: boolean; passthroughReason?: string; passthroughReasonText?: string };
+			assert.equal(log.passthrough, true);
+			assert.equal(log.passthroughReason, "sentinel");
+			assert.equal(log.passthroughReasonText, "A\n\nB");
+			assert.equal(harness.getPendingResponseCount(), 0);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	it("reports a deliberate LLM passthrough during recall", async () => {
 		const notifications: Notification[] = [];
 		const harness = await createNotificationHarness(notifications);
@@ -180,6 +214,42 @@ describe("passthrough notifications", () => {
 					})),
 					toolEvents: harness.events.filter((event) => event.type.startsWith("tool_execution")),
 				}),
+			);
+			assert.equal(harness.getPendingResponseCount(), 0);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("reports a deliberate LLM recall passthrough with the text above the sentinel as its reason", async () => {
+		const notifications: Notification[] = [];
+		const harness = await createNotificationHarness(notifications);
+		try {
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("long_output", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("short distilled note"),
+				() => {
+					const impression = harness.sessionManager
+					.getEntries()
+					.map((entry) => getEntryData(entry))
+					.find((entry) => entry?.toolName === "long_output");
+					assert.ok(impression);
+					return fauxAssistantMessage(fauxToolCall("recall_impression", { id: impression.id }), {
+						stopReason: "toolUse",
+					});
+				},
+				fauxAssistantMessage("A\n\nB\n\n\n<passthrough/>"),
+				fauxAssistantMessage("done"),
+			]);
+
+			await harness.session.prompt("run the long output tool and recall its impression");
+
+			assert.ok(
+				notifications.some(
+					(notification) =>
+						notification.message === "[impression] Recall passthrough for long_output: A\n\nB",
+				),
+				JSON.stringify({ notifications, pendingResponses: harness.getPendingResponseCount() }),
 			);
 			assert.equal(harness.getPendingResponseCount(), 0);
 		} finally {

@@ -111,6 +111,7 @@ export function registerToolResultHook(state: ImpressionSessionState): void {
 				toolName: event.toolName,
 				passthrough: true,
 				passthroughReason: distillation.passthroughReason,
+				passthroughReasonText: distillation.passthroughReasonText,
 				originalChars: fullText.length,
 				noteChars: fullText.length,
 				thinkingChars: distillation.thinking?.length ?? 0,
@@ -123,7 +124,7 @@ export function registerToolResultHook(state: ImpressionSessionState): void {
 			if (distillation.failure) {
 				ctx.ui.notify(`[impression] Distillation failed for ${event.toolName}: ${formatDistillationFailure(distillation.failure)}`, "error");
 			} else {
-				ctx.ui.notify(`[impression] Passthrough for ${event.toolName}: ${formatPassthroughReason(distillation.passthroughReason)}`, ptLevel);
+				ctx.ui.notify(`[impression] Passthrough for ${event.toolName}: ${formatPassthroughReason(distillation.passthroughReason, distillation.passthroughReasonText)}`, ptLevel);
 			}
 			return { content: event.content };
 		}

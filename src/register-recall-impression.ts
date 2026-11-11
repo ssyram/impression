@@ -139,13 +139,14 @@ export function registerRecallImpressionTool(state: ImpressionSessionState): voi
 				if (distillation.failure) {
 					state.pi.appendEntry(DISTILL_LOG_ENTRY_TYPE, {
 						toolCallId: impression.toolCallId, toolName: impression.toolName, passthrough: true,
-						passthroughReason: distillation.passthroughReason, originalChars: impression.fullText.length,
+						passthroughReason: distillation.passthroughReason, passthroughReasonText: distillation.passthroughReasonText,
+						originalChars: impression.fullText.length,
 						noteChars: impression.fullText.length, thinkingChars: distillation.thinking?.length ?? 0,
 						thinking: distillation.thinking, failure: distillation.failure, createdAt: Date.now(),
 					} satisfies DistillLogEntry);
 					ctx.ui.notify(`[impression] Recall distillation failed for ${impression.toolName}: ${formatDistillationFailure(distillation.failure)}`, "error");
 				} else {
-					ctx.ui.notify(`[impression] Recall passthrough for ${impression.toolName}: ${formatPassthroughReason(distillation.passthroughReason)}`, ptLevel);
+					ctx.ui.notify(`[impression] Recall passthrough for ${impression.toolName}: ${formatPassthroughReason(distillation.passthroughReason, distillation.passthroughReasonText)}`, ptLevel);
 				}
 				impression.recallCount = state.cfg.maxRecall;
 				updateRecallShowData(state, ctx, impression, "passthrough", distillation.note.length);

@@ -8,6 +8,7 @@ const PASSTHROUGH_REASON_DESCRIPTIONS = {
 	error: "distiller terminated abnormally",
 } satisfies Record<PassthroughReason, string>;
 
-export function formatPassthroughReason(reason: PassthroughReason | undefined): string {
+export function formatPassthroughReason(reason: PassthroughReason | undefined, reasonText?: string): string {
+	if (reasonText) return reasonText;
 	return reason ? `${reason} (${PASSTHROUGH_REASON_DESCRIPTIONS[reason]})` : "unknown reason";
 }

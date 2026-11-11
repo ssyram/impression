@@ -27,6 +27,7 @@ interface DistillationResult {
 	note: string;
 	thinking?: string;
 	passthroughReason?: PassthroughReason;
+	passthroughReasonText?: string;
 	failure?: DistillationFailure;
 }
 
@@ -148,12 +149,21 @@ export async function distillWithSameModel(
 		.trim();
 	const thinking = thinkingBlocks.length > 0 ? thinkingBlocks.join("\n") : undefined;
 	if (!strippedText) return { passthrough: true, note: DISTILLER_SENTINEL, thinking, passthroughReason: "empty" };
-	const sentinelLike = strippedText
-		.replace(/^["'`]+|["'`]+$/g, "")
-		.replace(/[.!。]+$/g, "")
-		.trim();
-	if (sentinelLike === DISTILLER_SENTINEL) {
-		return { passthrough: true, note: strippedText, thinking, passthroughReason: "sentinel" };
+	const lines = strippedText.split("\n");
+	const lastLineSentinel =
+		(lines[lines.length - 1] ?? "")
+			.replace(/^["'`]+|["'`]+$/g, "")
+			.replace(/[.!。]+$/g, "")
+			.trim() === DISTILLER_SENTINEL;
+	if (lastLineSentinel) {
+		const reasonText = lines.slice(0, -1).join("\n").trim();
+		return {
+			passthrough: true,
+			note: strippedText,
+			thinking,
+			passthroughReason: "sentinel",
+			passthroughReasonText: reasonText || undefined,
+		};
 	}
 	const finalNote = preparedReferences.active ? expandDraft(preparedReferences.index, strippedText) : strippedText;
 	if (finalNote === "") return { passthrough: true, note: DISTILLER_SENTINEL, thinking, passthroughReason: "empty" };
