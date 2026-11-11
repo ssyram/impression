@@ -9,6 +9,35 @@
 		"src/deliver-full-content.test.ts",
 		"src/distill-model-routing.integration.test.ts",
 		"src/recall-limit-delivery.integration.test.ts",
-		"../../packages/coding-agent/src/utils/highlight-js.d.ts"
-	]
+		"../../packages/coding-agent/src/utils/highlight-js.d.ts",
+		"src/self-provider-distillation.integration.test.ts",
+		"src/build-structured-distillation-context.test.ts",
+		"src/project-distillation-history.test.ts",
+		"eval/structured-message-parity.test.ts",
+		"eval/structured-responses-message-parity.test.ts"
+	],
+	"compilerOptions": {
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"paths": {
+			"@earendil-works/pi-ai": [
+				"../../packages/ai/src/index.ts"
+			],
+			"@earendil-works/pi-ai/*": [
+				"../../packages/ai/src/*.ts"
+			],
+			"@mariozechner/pi-ai": [
+				"../../packages/ai/src/compat.ts"
+			],
+			"@earendil-works/pi-agent-core": [
+				"../../packages/agent/src/index.ts"
+			],
+			"@earendil-works/pi-coding-agent": [
+				"../../packages/coding-agent/src/index.ts"
+			],
+			"@earendil-works/pi-tui": [
+				"../../packages/tui/src/index.ts"
+			]
+		}
+	}
 }

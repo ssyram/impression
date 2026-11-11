@@ -63,13 +63,6 @@ export function registerToolResultHook(state: ImpressionSessionState): void {
 			return { content: event.content };
 		}
 		const model = selected.model;
-		const auth = selected.kind === "fixed"
-			? { ok: true as const, apiKey: undefined, headers: undefined }
-			: await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok) {
-			notifyImpressionSkip(ctx, `missing auth for ${model.provider}/${model.id}: ${auth.error}`);
-			return { content: event.content };
-		}
 		const visibleHistory = getVisibleHistory(ctx);
 		const originalSystemPrompt = ctx.getSystemPrompt();
 		ctx.ui.notify(`[impression] Distilling ${fullText.length} chars with ${model.provider}/${model.id}...`, "info");
@@ -77,7 +70,7 @@ export function registerToolResultHook(state: ImpressionSessionState): void {
 		const distillation = await distillWithSameModel(
 			model,
 			state.cfg.debugDistillMode,
-			{ apiKey: auth.apiKey, headers: auth.headers },
+			{ registry: ctx.modelRegistry, effort: selected.effort },
 			{ toolName: event.toolName, content: event.content, visibleHistory, originalSystemPrompt },
 			computeDistillMaxTokens(fullText.length, model, state.cfg),
 			ctx.signal,
@@ -99,7 +92,6 @@ export function registerToolResultHook(state: ImpressionSessionState): void {
 					});
 				}
 				: undefined,
-			selected.kind === "fixed" ? { registry: ctx.modelRegistry, effort: selected.effort } : undefined,
 		);
 
 		const ptLevel = state.cfg.debug ? "warning" : "info";

@@ -92,15 +92,6 @@ export function registerRecallImpressionTool(state: ImpressionSessionState): voi
 				return deliverFullContent(state, impression);
 			}
 			const model = selected.model;
-			const auth = selected.kind === "fixed"
-				? { ok: true as const, apiKey: undefined, headers: undefined }
-				: await ctx.modelRegistry.getApiKeyAndHeaders(model);
-			if (!auth.ok) {
-				notifyImpressionSkip(ctx, `missing auth for ${model.provider}/${model.id}: ${auth.error}`);
-				impression.recallCount = state.cfg.maxRecall;
-				updateRecallShowData(state, ctx, impression, "passthrough", 0);
-				return deliverFullContent(state, impression);
-			}
 			const visibleHistory = getVisibleHistory(ctx);
 			const originalSystemPrompt = ctx.getSystemPrompt();
 			ctx.ui.notify(`[impression] Re-distilling ${impression.fullText.length} chars with ${model.provider}/${model.id}...`, "info");
@@ -108,7 +99,7 @@ export function registerRecallImpressionTool(state: ImpressionSessionState): voi
 			const distillation = await distillWithSameModel(
 				model,
 				state.cfg.debugDistillMode,
-				{ apiKey: auth.apiKey, headers: auth.headers },
+				{ registry: ctx.modelRegistry, effort: selected.effort },
 				{ toolName: impression.toolName, content: impression.fullContent, visibleHistory, originalSystemPrompt },
 				computeDistillMaxTokens(impression.fullText.length, model, state.cfg),
 				signal,
@@ -131,7 +122,6 @@ export function registerRecallImpressionTool(state: ImpressionSessionState): voi
 						});
 					}
 					: undefined,
-				selected.kind === "fixed" ? { registry: ctx.modelRegistry, effort: selected.effort } : undefined,
 			);
 			const ptLevel = state.cfg.debug ? "warning" : "info";
 			if (distillation.passthrough) {

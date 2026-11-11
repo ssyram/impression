@@ -1,4 +1,22 @@
 import type { Model } from "@earendil-works/pi-ai";
+import { streamSimple } from "./runtime-pi-ai-compat.js";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+
+const registry: Pick<ModelRegistry, "streamSimple"> = {
+	streamSimple: (target, context, options) => streamSimple(target, context, {
+		...options, apiKey: "test",
+		fetch: async (_url, init) => {
+			mockState.payload = JSON.parse(String(init?.body));
+			const chunks = [
+				{ id: "response", choices: [{ delta: { role: "assistant", content: mockState.responseText }, finish_reason: null }] },
+				{ id: "response", choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } },
+			];
+			return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", {
+				headers: { "content-type": "text/event-stream" },
+			});
+		},
+	}),
+};
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { distillWithSameModel } from "../src/distill.js";
 import { getDistillerSystemPrompt, getDistillerUserTemplate, renderTemplate } from "../src/prompt-loader.js";
@@ -9,44 +27,7 @@ import type { EvalFixture } from "./distillation-eval-types.js";
 
 const mockState = vi.hoisted(() => ({ payload: undefined as unknown, responseText: "Also contains: nothing omitted" }));
 
-vi.mock("openai", () => {
-	class FakeOpenAI {
-		chat = {
-			completions: {
-				create: (payload: unknown) => {
-					mockState.payload = payload;
-					const chunks = [
-						{
-							id: "response",
-							choices: [{ delta: { role: "assistant", content: mockState.responseText }, finish_reason: null }],
-						},
-						{
-							id: "response",
-							choices: [{ delta: {}, finish_reason: "stop" }],
-							usage: {
-								prompt_tokens: 1,
-								completion_tokens: 1,
-								prompt_tokens_details: { cached_tokens: 0 },
-								completion_tokens_details: { reasoning_tokens: 0 },
-							},
-						},
-					];
-					const stream = {
-						async *[Symbol.asyncIterator]() {
-							for (const chunk of chunks) yield chunk;
-						},
-					};
-					const request = Promise.resolve(stream) as Promise<typeof stream> & {
-						withResponse: () => Promise<{ data: typeof stream; response: { status: number; headers: Headers } }>;
-					};
-					request.withResponse = async () => ({ data: stream, response: { status: 200, headers: new Headers() } });
-					return request;
-				},
-			},
-		};
-	}
-	return { default: FakeOpenAI };
-});
+
 
 const model: Model<"openai-completions"> = {
 	id: "eval-model",
@@ -85,7 +66,7 @@ describe("eval structured-message parity", () => {
 		await distillWithSameModel(
 			model,
 			"third-person",
-			{ apiKey: "test" },
+			{ registry },
 			request,
 			8192,
 			undefined,
@@ -109,7 +90,7 @@ describe("eval structured-message parity", () => {
 			true,
 		);
 
-		expect(payload).toBe(mockState.payload);
+		expect(JSON.parse(JSON.stringify(payload))).toEqual(mockState.payload);
 		expect(payload.tools).toEqual([]);
 		expect(payload.messages.map((message) => message.role)).toEqual([
 			"system",
@@ -149,7 +130,7 @@ describe("eval structured-message parity", () => {
 		const result = await distillWithSameModel(
 			model,
 			"third-person",
-			{ apiKey: "test" },
+			{ registry },
 			request,
 			8192,
 			undefined,
@@ -188,7 +169,7 @@ describe("eval structured-message parity", () => {
 		const result = await distillWithSameModel(
 			model,
 			"third-person",
-			{ apiKey: "test" },
+			{ registry },
 			{
 				toolName: "read",
 				content: [
@@ -219,7 +200,7 @@ describe("eval structured-message parity", () => {
 		const result = await distillWithSameModel(
 			model,
 			"third-person",
-			{ apiKey: "test" },
+			{ registry },
 			{
 				toolName: "read",
 				content: [
@@ -241,7 +222,7 @@ describe("eval structured-message parity", () => {
 		const result = await distillWithSameModel(
 			model,
 			"third-person",
-			{ apiKey: "test" },
+			{ registry },
 			{
 				toolName: "read",
 				content: [{ type: "text", text: "current source" }],
@@ -273,7 +254,7 @@ describe("eval structured-message parity", () => {
 		const result = await distillWithSameModel(
 			model,
 			"third-person",
-			{ apiKey: "test" },
+			{ registry },
 			request,
 			8192,
 			undefined,
